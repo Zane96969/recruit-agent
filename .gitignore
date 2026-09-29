@@ -1,0 +1,21 @@
+# ===== 密钥（本地测试用，绝不提交）=====
+.env
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# ===== 虚拟环境 =====
+.venv/
+venv/
+
+# ===== 向量库（克隆后运行 recruit_ingest.py 自行生成，不入库）=====
+chroma_db/
+
+# ===== 编辑器 / 系统 =====
+.vscode/
+.idea/
+.DS_Store
+.preview/

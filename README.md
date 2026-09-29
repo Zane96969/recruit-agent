@@ -1,0 +1,101 @@
+# 招聘 Agent（Recruit Agent）
+
+> 面向招聘场景的 AI Agent：读一份 JD（职位描述）生成**结构化人才画像**，并基于 JD 知识库**检索问答（带出处、防幻觉）**。
+> 项目含两套实现：**手写版**（主循环与 RAG 全部手写、吃透底层）与 **LangChain 框架版**（工程化）。
+
+## 功能特性
+
+- **JD → 人才画像**：抽取薪资、地点、岗位名称，归纳核心与可选技术栈；JD 没写的内容（如发展前景）标注"资料不足"，禁止编造。
+- **知识库问答**：JD 切块入库、向量检索，答案末尾注明出自哪份 JD。
+- **工具调用（Function Calling）**：Agent 自动判断该"查知识库"还是"现场分析一份新 JD"。
+- **多轮记忆**：同一会话连续提问（如先问薪资、再追问地点），模型记得上文。
+- **双实现对照**：手写 ReAct 主循环 + RAG，再用 LangChain 重写，便于理解框架到底封装了什么。
+
+## 效果演示
+
+```
+问：AI Agent 开发工程师的薪资是多少？
+答：薪资范围是 12K-20K · 14薪（出自 AI Agent 开发工程师 JD）。
+
+追问：地点呢？
+答：工作地点是北京 / 远程。
+
+给一份新 JD（前端 / 杭州 / 10K-15K / Vue、TypeScript）：
+答：岗位画像 —— 核心技术 Vue，加分技术 TypeScript。
+```
+
+## 技术栈
+
+| 用途 | 选型 |
+| --- | --- |
+| 聊天模型 | Qwen/Qwen2.5-14B-Instruct（硅基流动，OpenAI 兼容接口） |
+| 向量模型 Embedding | BAAI/bge-large-zh-v1.5 |
+| 精排模型 Rerank | BAAI/bge-reranker-v2-m3 |
+| 向量数据库 | Chroma |
+| 框架 | LangChain 1.4 + LangGraph 1.2 |
+| 语言 | Python 3.11 |
+
+## 项目结构
+
+```
+recruit-agent/
+├── agent_code_templates.py   # 共享模板：客户端、切块、检索、护栏、ReAct 骨架
+├── recruit_ingest.py         # 手写：JD 切块并写入向量库
+├── recruit_qa.py             # 手写：检索问答（带出处）
+├── recruit_profile.py        # 手写：JD 人才画像
+├── data/                     # 示例 JD（拟真数据）
+│   ├── jd_ai_agent.txt
+│   ├── jd_java.txt
+│   └── jd_recruiter.txt
+├── recruit_lc/               # LangChain 框架版
+│   ├── step1_structured.py   # with_structured_output 画像
+│   ├── step2_retriever.py    # Chroma 检索器
+│   ├── tools.py              # @tool 两个工具
+│   └── agent.py              # create_agent + 记忆
+└── docs/
+    └── 招聘Agent-架构图.html
+```
+
+## 快速开始（Windows PowerShell）
+
+```powershell
+# 1. 克隆并进入
+git clone https://github.com/<your-username>/recruit-agent.git
+cd recruit-agent
+
+# 2. 创建并激活虚拟环境
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+
+# 3. 配置密钥：复制模板，编辑 .env 填入 API_KEY
+copy .env.example .env
+
+# 4. 安装依赖
+pip install -r requirements.txt
+
+# 5. 构建向量库（切块入库，生成 chroma_db/）
+python recruit_ingest.py
+
+# 6. 运行
+python recruit_qa.py            # 手写：检索问答
+python recruit_profile.py       # 手写：人才画像
+python recruit_lc/agent.py      # 框架版：工具调用 + 记忆
+```
+
+> 需要一个硅基流动 API Key（注册：https://cloud.siliconflow.cn ，免费额度可跑通本项目）。
+> 也可换成 DeepSeek、通义、Kimi、OpenAI 等任意 OpenAI 兼容服务，只改 `.env` 三行，代码不动。
+
+## 数据说明
+
+`data/` 下为**拟真示例 JD**，由作者编写、不对应任何真实公司，可自由用于演示。接入真实 JD 时请先脱敏（公司名、联系人、保密薪资）。
+
+## 路线图（Roadmap）
+
+- [ ] **LangGraph 深入**：StateGraph 状态机、循环/分支、checkpoint 持久化（Sqlite/Postgres）、handoff 与多智能体。
+- [ ] **MCP**：标准化工具接入。
+- [ ] **Web 界面 + 部署**：Streamlit/Gradio 界面、真实数据、上线可访问。
+- [ ] **能力 B（对标分析）**：一批同类 JD 反推合理技术栈与薪资行情；高级版用 Deep Agents 做"招聘行业深度研究 Agent"。
+
+## License
+
+[MIT](LICENSE)
