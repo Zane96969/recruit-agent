@@ -2,6 +2,7 @@
 
 > 面向招聘场景的 AI Agent：读一份 JD（职位描述）生成**结构化人才画像**，并基于 JD 知识库**检索问答（带出处、防幻觉）**。
 > 项目含三套实现，呈现一条完整的"底层 → 组件 → 编排"路径：**手写版**（主循环与 RAG 全部手写、吃透底层）→ **LangChain 框架版**（组件化）→ **LangGraph 编排版**（状态机 + 持久记忆 + 人工审批）。
+> 另有 **MCP 工具服务（recruit_mcp）**：把"简历分析 / 人岗匹配"做成标准 MCP Server，可被任意 MCP Agent 即插即用。
 
 ## 功能特性
 
@@ -10,6 +11,7 @@
 - **工具调用（Function Calling）**：Agent 自动判断该"查知识库"还是"现场分析一份新 JD"。
 - **多轮记忆**：同一会话连续提问（如先问薪资、再追问地点），模型记得上文。
 - **人工审批（Human-in-the-loop）**：工具执行前暂停，把“要调的工具 + 参数”交人确认，批准才执行、拒绝则中止。
+- **MCP 工具服务**：把“简历分析、人岗匹配”按 MCP 标准做成独立 Server，Agent 一次握手发现两个工具、自主选择并提参；换 Agent 不改工具、换工具不改 Agent。
 - **三版递进对照**：手写 ReAct/RAG → LangChain 组件化 → LangGraph 状态机编排 + checkpoint 持久记忆，看清每一层框架到底封装了什么。
 
 ## 效果演示
@@ -34,6 +36,7 @@
 | 精排模型 Rerank | BAAI/bge-reranker-v2-m3 |
 | 向量数据库 | Chroma |
 | 框架 | LangChain 1.4 + LangGraph 1.2 |
+| 工具协议 | MCP（FastMCP）+ langchain-mcp-adapters |
 | 语言 | Python 3.11 |
 
 ## 三版实现对照
@@ -71,6 +74,9 @@ recruit-agent/
 ├── recruit_graph/            # LangGraph 编排版
 │   ├── graph_tools.py        # 两个招聘工具（检索 + JD 分析）
 │   └── app.py                # StateGraph ReAct 主管 + SqliteSaver 记忆 + interrupt 人工审批
+├── recruit_mcp/              # MCP 工具服务（能力标准化，可被任意 MCP Agent 复用）
+│   ├── recruit_server.py     # FastMCP Server：analyze_resume + match_resume_jd
+│   └── agent_recruit_client.py  # Agent 经 MCP 自主选工具的演示
 └── docs/
     └── 招聘Agent-架构图.html
 ```
@@ -100,6 +106,7 @@ python recruit_qa.py            # 手写：检索问答
 python recruit_profile.py       # 手写：人才画像
 python recruit_lc/agent.py      # LangChain 版：工具调用 + 记忆
 python recruit_graph/app.py     # LangGraph 版：状态机 + 持久记忆 + 人工审批
+python recruit_mcp/agent_recruit_client.py  # MCP：Agent 自主调用简历分析/人岗匹配
 ```
 
 > 需要一个硅基流动 API Key（注册：https://cloud.siliconflow.cn ，免费额度可跑通本项目）。
@@ -113,7 +120,7 @@ python recruit_graph/app.py     # LangGraph 版：状态机 + 持久记忆 + 人
 
 - [x] **LangGraph**：StateGraph 状态机、循环/分支、checkpoint 持久化（Sqlite）、多智能体（subagents-as-tools）。
 - [x] **人工审批 interrupt**：工具执行前暂停、把待执行动作（工具名 + 参数）交人确认，批准执行 / 拒绝中止；可扩展到跨平台认人等场景。
-- [ ] **MCP**：标准化工具接入。
+- [x] **MCP**：招聘能力（简历分析、人岗匹配）做成标准 MCP Server（recruit_mcp），Agent 一次握手、自主选工具；可扩展检索类工具。
 - [ ] **Web 界面 + 部署**：Streamlit/Gradio 界面、真实数据、上线可访问。
 - [ ] **能力 B（对标分析）**：一批同类 JD 反推合理技术栈与薪资行情；高级版用 Deep Agents 做"招聘行业深度研究 Agent"。
 
