@@ -12,6 +12,7 @@
 - **多轮记忆**：同一会话连续提问（如先问薪资、再追问地点），模型记得上文。
 - **人工审批（Human-in-the-loop）**：工具执行前暂停，把“要调的工具 + 参数”交人确认，批准才执行、拒绝则中止。
 - **MCP 工具服务**：把“简历分析、人岗匹配”按 MCP 标准做成独立 Server，Agent 一次握手发现两个工具、自主选择并提参；换 Agent 不改工具、换工具不改 Agent。
+- **网页界面（Gradio）**：一条命令在浏览器里聊天，后端实时打印每一步的消息类型与工具名，工具路由过程清晰可观测。
 - **三版递进对照**：手写 ReAct/RAG → LangChain 组件化 → LangGraph 状态机编排 + checkpoint 持久记忆，看清每一层框架到底封装了什么。
 
 ## 效果演示
@@ -37,6 +38,7 @@
 | 向量数据库 | Chroma |
 | 框架 | LangChain 1.4 + LangGraph 1.2 |
 | 工具协议 | MCP（FastMCP）+ langchain-mcp-adapters |
+| Web 界面 | Gradio 6.x |
 | 语言 | Python 3.11 |
 
 ## 三版实现对照
@@ -73,6 +75,7 @@ recruit-agent/
 │   └── agent.py              # create_agent + 记忆
 ├── recruit_graph/            # LangGraph 编排版
 │   ├── graph_tools.py        # 两个招聘工具（检索 + JD 分析）
+│   ├── web_agent.py          # Gradio 网页版：create_agent + 双工具、工具调用可观测
 │   └── app.py                # StateGraph ReAct 主管 + SqliteSaver 记忆 + interrupt 人工审批
 ├── recruit_mcp/              # MCP 工具服务（能力标准化，可被任意 MCP Agent 复用）
 │   ├── recruit_server.py     # FastMCP Server：analyze_resume + match_resume_jd
@@ -106,6 +109,7 @@ python recruit_qa.py            # 手写：检索问答
 python recruit_profile.py       # 手写：人才画像
 python recruit_lc/agent.py      # LangChain 版：工具调用 + 记忆
 python recruit_graph/app.py     # LangGraph 版：状态机 + 持久记忆 + 人工审批
+python recruit_graph/web_agent.py  # Gradio 网页版：浏览器打开 http://127.0.0.1:7860
 python recruit_mcp/agent_recruit_client.py  # MCP：Agent 自主调用简历分析/人岗匹配
 ```
 
@@ -121,7 +125,8 @@ python recruit_mcp/agent_recruit_client.py  # MCP：Agent 自主调用简历分�
 - [x] **LangGraph**：StateGraph 状态机、循环/分支、checkpoint 持久化（Sqlite）、多智能体（subagents-as-tools）。
 - [x] **人工审批 interrupt**：工具执行前暂停、把待执行动作（工具名 + 参数）交人确认，批准执行 / 拒绝中止；可扩展到跨平台认人等场景。
 - [x] **MCP**：招聘能力（简历分析、人岗匹配）做成标准 MCP Server（recruit_mcp），Agent 一次握手、自主选工具；可扩展检索类工具。
-- [ ] **Web 界面 + 部署**：Streamlit/Gradio 界面、真实数据、上线可访问。
+- [x] **Web 界面（Gradio）**：本地网页聊天、后端打印消息类型与工具名、工具路由可观测（`recruit_graph/web_agent.py`）。
+- [ ] **部署上线**：真实数据、服务器部署、公网可访问。
 - [ ] **能力 B（对标分析）**：一批同类 JD 反推合理技术栈与薪资行情；高级版用 Deep Agents 做"招聘行业深度研究 Agent"。
 
 ## License

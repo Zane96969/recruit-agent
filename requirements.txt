@@ -9,3 +9,4 @@ langchain-openai>=1.6.0
 langchain-chroma>=1.1.0
 mcp>=1.30.0
 langchain-mcp-adapters>=0.1.14
+gradio>=6.0.0

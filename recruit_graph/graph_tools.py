@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 from dotenv import load_dotenv
 from langchain_openai import  OpenAIEmbeddings
@@ -19,11 +20,12 @@ embeddings = OpenAIEmbeddings(
     model="BAAI/bge-large-zh-v1.5",
     check_embedding_ctx_length=False)
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
 vectorstore = Chroma(
     collection_name="job_jd",
-    persist_directory=r"D:\agent-learning\workspace\chroma_db",
+    persist_directory=str(REPO_ROOT / "chroma_db"),
     embedding_function=embeddings,
-  
 )
 retriever = vectorstore.as_retriever(search_kwargs={"k": 2})
 @tool
