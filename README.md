@@ -12,7 +12,9 @@
 - **多轮记忆**：同一会话连续提问（如先问薪资、再追问地点），模型记得上文。
 - **人工审批（Human-in-the-loop）**：工具执行前暂停，把“要调的工具 + 参数”交人确认，批准才执行、拒绝则中止。
 - **MCP 工具服务**：把“简历分析、人岗匹配”按 MCP 标准做成独立 Server，Agent 一次握手发现两个工具、自主选择并提参；换 Agent 不改工具、换工具不改 Agent。
-- **网页界面（Gradio）**：一条命令在浏览器里聊天，后端实时打印每一步的消息类型与工具名，工具路由过程清晰可观测。
+- **网页界面（Gradio）**：一条命令在浏览器里聊天，工具路由过程清晰可观测。
+- **思考过程可视化**：网页端把“调用工具 → 工具返回 → 最终答案”渲染成可折叠块、按执行顺序实时直播，每一步可点开追溯。
+- **网页跨轮记忆**：checkpointer + thread_id 让网页版记得上文（先问薪资、再追问“它在哪工作”能正确指代），且不重复调用已有结果的工具。
 - **三版递进对照**：手写 ReAct/RAG → LangChain 组件化 → LangGraph 状态机编排 + checkpoint 持久记忆，看清每一层框架到底封装了什么。
 
 ## 效果演示
@@ -76,6 +78,7 @@ recruit-agent/
 ├── recruit_graph/            # LangGraph 编排版
 │   ├── graph_tools.py        # 两个招聘工具（检索 + JD 分析）
 │   ├── web_agent.py          # Gradio 网页版：create_agent + 双工具、工具调用可观测
+│   ├── web_stream_agent.py   # 网页完整版：思考过程折叠块直播 + checkpointer 跨轮记忆
 │   └── app.py                # StateGraph ReAct 主管 + SqliteSaver 记忆 + interrupt 人工审批
 ├── recruit_mcp/              # MCP 工具服务（能力标准化，可被任意 MCP Agent 复用）
 │   ├── recruit_server.py     # FastMCP Server：analyze_resume + match_resume_jd
@@ -110,6 +113,7 @@ python recruit_profile.py       # 手写：人才画像
 python recruit_lc/agent.py      # LangChain 版：工具调用 + 记忆
 python recruit_graph/app.py     # LangGraph 版：状态机 + 持久记忆 + 人工审批
 python recruit_graph/web_agent.py  # Gradio 网页版：浏览器打开 http://127.0.0.1:7860
+python recruit_graph/web_stream_agent.py  # 网页完整版：思考过程直播 + 跨轮记忆
 python recruit_mcp/agent_recruit_client.py  # MCP：Agent 自主调用简历分析/人岗匹配
 ```
 
@@ -126,6 +130,7 @@ python recruit_mcp/agent_recruit_client.py  # MCP：Agent 自主调用简历分�
 - [x] **人工审批 interrupt**：工具执行前暂停、把待执行动作（工具名 + 参数）交人确认，批准执行 / 拒绝中止；可扩展到跨平台认人等场景。
 - [x] **MCP**：招聘能力（简历分析、人岗匹配）做成标准 MCP Server（recruit_mcp），Agent 一次握手、自主选工具；可扩展检索类工具。
 - [x] **Web 界面（Gradio）**：本地网页聊天、后端打印消息类型与工具名、工具路由可观测（`recruit_graph/web_agent.py`）。
+- [x] **思考过程可视化 + 网页记忆**：工具调用折叠块按顺序直播、每步可追溯；checkpointer + thread_id 支撑跨轮记忆（`recruit_graph/web_stream_agent.py`）。
 - [ ] **部署上线**：真实数据、服务器部署、公网可访问。
 - [ ] **能力 B（对标分析）**：一批同类 JD 反推合理技术栈与薪资行情；高级版用 Deep Agents 做"招聘行业深度研究 Agent"。
 
