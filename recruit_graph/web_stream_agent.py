@@ -2,7 +2,7 @@ import gradio as gr
 from graph_tools import chat_model, retrieve_jd_info,analyze_jd_info
 from langchain.agents import create_agent
 from gradio import ChatMessage
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessageChunk, ToolMessage, ToolMessageChunk
 import json
 from langgraph.checkpoint.memory import InMemorySaver
 
@@ -12,49 +12,84 @@ tools=[retrieve_jd_info,analyze_jd_info]
 agent=create_agent(
     model=chat_model,
     tools=[retrieve_jd_info, analyze_jd_info],
-    system_prompt=("你是招聘助手，有两个工具：retrieve_jd_info 检索公司已有的岗位JD库，analyze_jd_info 分析一段JD原文。先判断用户有没有直接给出JD原文：给了JD原文，必须调用 analyze_jd_info 做结构化分析；没给JD、只是询问岗位信息，才调用 retrieve_jd_info 检索。如果检索结果里确实没有，再如实说资料不足。回答简洁。"
+    system_prompt=("你是招聘助手，有两个工具：retrieve_jd_info 检索公司已有的岗位JD库，analyze_jd_info 分析一段JD原文。先判断用户有没有直接给出JD原文：给了JD原文，必须调用 analyze_jd_info 做结构化分析；没给JD、只是询问岗位信息，才调用 retrieve_jd_info 检索。如果检索结果里确实没有，再如实说资料不足。当用户让你从多个岗位里推荐或判断最适合哪一个时，只给出匹配度最高的 1 个岗位，并用一两句话说明理由（最关键的匹配点），不要把所有岗位逐个罗列对比，除非用户明确要求看全部岗位的对比。如果用户曾要求“直接说结果”或“简洁回答”，就要一直保持这种风格：先给结论、不铺垫、不展开，即使用户后面的消息里没有重复这条要求，也必须照做，直到用户明确要求“详细展开”。回答简洁。"
                    ),checkpointer=memory
 )
 def stream_bot(history):
     user_text = history[-1]["content"]
-    config = {"configurable":{"thread_id": "zhang-001"}}
-    for chunk in agent.stream(
+    config = {"configurable": {"thread_id": "zhang-001"}}
+    answer = ""          # 当前普通回复的累积文本
+    answer_idx = None    # 普通回复气泡在 history 中的下标
+    pending_tools = {}   # 工具调用 index -> {name, args, bubble_idx}
+    for chunk, _meta in agent.stream(
         {"messages": [("user", user_text)]},
-        stream_mode="updates",
-        config=config
+        stream_mode="messages",
+        config=config,
     ):
-        for node_update in chunk.values():
-            for current_message in node_update["messages"]:
-                if isinstance(current_message, AIMessage):
-                    for tool_call in current_message.tool_calls:
+        if isinstance(chunk, AIMessageChunk):
+            # 工具调用参数是按分片到的，这里增量拼接
+            if chunk.tool_call_chunks:
+                for tc in chunk.tool_call_chunks:
+                    idx = tc["index"]
+                    if idx not in pending_tools:
+                        pending_tools[idx] = {
+                            "name": tc.get("name", "") or "",
+                            "args": "",
+                            "bubble_idx": None,
+                        }
+                    if tc.get("name"):
+                        pending_tools[idx]["name"] = tc["name"]
+                    if tc.get("args"):
+                        pending_tools[idx]["args"] += tc["args"]
+                    info = pending_tools[idx]
+                    if info["bubble_idx"] is None:
                         history.append(ChatMessage(
                             role="assistant",
-                            content=json.dumps(
-                                tool_call["args"], ensure_ascii=False
-                            ),
-                            metadata={
-                                "title": f"🛠️ 调用工具 {tool_call['name']}",
-                                "status": "done",
-                            },
+                            content="",
+                            metadata={"title": f"🛠️ 调用工具 {info['name'] or '...'}", "status": "pending"},
                         ))
-                        yield history
-                    if current_message.content and not current_message.tool_calls:
-                        history.append(ChatMessage(
-                            role="assistant",
-                            content=current_message.content,
-                        ))
-                        yield history
-                if isinstance(current_message, ToolMessage):
-                    tool_name = getattr(current_message, "name", "未知工具")
-                    history.append(ChatMessage(
+                        info["bubble_idx"] = len(history) - 1
+                    args_done = info["args"].lstrip().startswith("{") and info["args"].rstrip().endswith("}")
+                    show_args = info["args"]
+                    if args_done:
+                        try:
+                            show_args = json.dumps(
+                                json.loads(info["args"]),
+                                ensure_ascii=False,
+                                indent=2,
+                            )
+                        except Exception:
+                            pass
+                    history[info["bubble_idx"]] = ChatMessage(
                         role="assistant",
-                        content=str(current_message.content),
+                        content=show_args[:500],
                         metadata={
-                            "title": f"⚙️ 工具 {tool_name} 返回结果",
-                            "status": "done",
+                            "title": f"🛠️ 调用工具 {info['name']}",
+                            "status": "done" if args_done else "pending",
                         },
-                    ))
-                    yield history
+                    )
+                yield history
+            # 正文按 token 增量累积，逐字更新气泡
+            if chunk.content:
+                answer += chunk.content
+                if answer_idx is None:
+                    history.append(ChatMessage(role="assistant", content=""))
+                    answer_idx = len(history) - 1
+                history[answer_idx] = ChatMessage(role="assistant", content=answer)
+                yield history
+        elif isinstance(chunk, (ToolMessage, ToolMessageChunk)):
+            tool_name = getattr(chunk, "name", "未知工具")
+            history.append(ChatMessage(
+                role="assistant",
+                content=str(chunk.content)[:600],
+                metadata={
+                    "title": f"⚙️ 工具 {tool_name} 返回结果",
+                    "status": "done",
+                },
+            ))
+            answer = ""
+            answer_idx = None
+            yield history
 def add_user(user_text,history):
     return" " ,history + [{"role": "user", "content": user_text}]
 
