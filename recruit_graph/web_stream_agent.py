@@ -1,5 +1,10 @@
 import gradio as gr
-from graph_tools import chat_model, retrieve_jd_info,analyze_jd_info
+from graph_tools import (
+    chat_model,
+    retrieve_jd_info,
+    analyze_jd_info,
+    analyze_and_match_resume,
+)
 from langchain.agents import create_agent
 from gradio import ChatMessage
 from langchain_core.messages import AIMessageChunk, ToolMessage, ToolMessageChunk
@@ -8,11 +13,18 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 
 memory=InMemorySaver()
-tools=[retrieve_jd_info,analyze_jd_info]
+tools=[retrieve_jd_info, analyze_jd_info, analyze_and_match_resume]
 agent=create_agent(
     model=chat_model,
-    tools=[retrieve_jd_info, analyze_jd_info],
-    system_prompt=("你是招聘助手，有两个工具：retrieve_jd_info 检索公司已有的岗位JD库，analyze_jd_info 分析一段JD原文。先判断用户有没有直接给出JD原文：给了JD原文，必须调用 analyze_jd_info 做结构化分析；没给JD、只是询问岗位信息，才调用 retrieve_jd_info 检索。如果检索结果里确实没有，再如实说资料不足。当用户让你从多个岗位里推荐或判断最适合哪一个时，只给出匹配度最高的 1 个岗位，并用一两句话说明理由（最关键的匹配点），不要把所有岗位逐个罗列对比，除非用户明确要求看全部岗位的对比。如果用户曾要求“直接说结果”或“简洁回答”，就要一直保持这种风格：先给结论、不铺垫、不展开，即使用户后面的消息里没有重复这条要求，也必须照做，直到用户明确要求“详细展开”。回答简洁。"
+    tools=tools,
+    system_prompt=("你是招聘助手，有三个工具：retrieve_jd_info 检索公司已有的岗位JD库；analyze_jd_info 分析一段JD原文；"
+                   "analyze_and_match_resume 简历一站式工具，输入简历原文即可自动完成候选人画像、岗位库检索和匹配度报告。"
+                   "路由规则：1）用户直接给出JD原文，必须调用 analyze_jd_info 做结构化分析；"
+                   "2）用户没给JD、只是询问岗位信息，调用 retrieve_jd_info 检索；"
+                   "3）用户发来简历、或要求分析候选人/匹配岗位时，调用一次 analyze_and_match_resume 并传入完整简历原文即可，"
+                   "画像和匹配都在工具内部按固定顺序完成，不要分多次调用、不要自己分析简历；"
+                   "4）检索结果里确实没有，再如实说资料不足。"
+                   "当用户让你从多个岗位里推荐或判断最适合哪一个时，只给出匹配度最高的 1 个岗位，并用一两句话说明理由（最关键的匹配点），不要把所有岗位逐个罗列对比，除非用户明确要求看全部岗位的对比。如果用户曾要求“直接说结果”或“简洁回答”，就要一直保持这种风格：先给结论、不铺垫、不展开，即使用户后面的消息里没有重复这条要求，也必须照做，直到用户明确要求“详细展开”。回答简洁。"
                    ),checkpointer=memory
 )
 def stream_bot(history):
@@ -123,7 +135,7 @@ with gr.Blocks(title="招聘Agent·思考过程可视化") as demo:
     gr.Markdown(
         """
         # 智能招聘助手
-        粘贴 **岗位 JD**，我帮你解析成结构化信息；也可以直接问我岗位的薪资、要求、技术栈。
+        粘贴 **岗位 JD**，我帮你解析成结构化信息；发来 **简历**，我先做候选人画像、再自动从岗位库匹配最合适的岗位；也可以直接问我岗位的薪资、要求、技术栈。
         """
     )
     chatbot=gr.Chatbot(show_label=False)
@@ -135,6 +147,7 @@ with gr.Blocks(title="招聘Agent·思考过程可视化") as demo:
             scale=1,)
     examples = gr.Examples(
         examples=[
+            "帮我分析这份简历并匹配岗位：张三，23岁，软件工程本科，会 Python、LangChain、RAG、Chroma，期望实习薪资3K-5K",
             "AI Agent 开发岗位的薪资范围是多少？",
             "Java 岗位要求几年工作经验？",
             "招聘专员主要负责哪些工作？",
