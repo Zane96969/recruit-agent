@@ -1,9 +1,10 @@
 import os
+import re
 from pathlib import Path
 from typing import Annotated
 
 from dotenv import load_dotenv
-from langchain_openai import  OpenAIEmbeddings
+from langchain_openai import OpenAIEmbeddings
 from langchain_core.tools import tool
 from langchain_chroma import Chroma
 from langchain_openai import ChatOpenAI
@@ -20,7 +21,8 @@ embeddings = OpenAIEmbeddings(
     api_key=API_KEY,
     base_url=BASE_URL,
     model="BAAI/bge-large-zh-v1.5",
-    check_embedding_ctx_length=False)
+    check_embedding_ctx_length=False,
+)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -30,42 +32,54 @@ vectorstore = Chroma(
     embedding_function=embeddings,
 )
 retriever = vectorstore.as_retriever(search_kwargs={"k": 2})
+
+
 @tool
 def retrieve_jd_info(question: str) -> str:
     """
     根据用户问题检索相关的JD信息。
     """
     docs = retriever.invoke(question)
-    content=[document.page_content  for document in docs]
+    content = [document.page_content for document in docs]
     return "\n".join(content)
+
 
 class TechStack(BaseModel):
     core_tech: list[str] = Field(description="核心技术栈")
     optional_tech: list[str] = Field(description="可选技术栈", default=None)
 
+
 class JobList(BaseModel):
     name: str = Field(description="岗位名称")
-    salary: str = Field( description="薪资范围")
+    salary: str = Field(description="薪资范围")
     location: str = Field(description="工作地点")
     requirements: str = Field(description="岗位要求", default=None)
     tech_stack: TechStack = Field(description="技术栈", default=None)
-    
+
+
 chat_model = ChatOpenAI(
     api_key=API_KEY,
     base_url=BASE_URL,
-    model=MODEL
+    model=MODEL,
+    temperature=0,
 )
-    
-structured_model = chat_model.with_structured_output(
-    JobList, method="function_calling"
-)
+
+structured_model = chat_model.with_structured_output(JobList, method="function_calling")
+
+
 @tool
-def analyze_jd_info(jd_text: str) -> str: 
+def analyze_jd_info(jd_text: str) -> str:
     """
     用户提供一份 JD 原文、要求分析岗位或生成人才画像时使用
     """
-    result = structured_model.invoke([SystemMessage(content="你是一名招聘信息解析专家，请将JD信息提取为结构化数据。对于岗位要求，如果没有明确要求，请返回空字符串。"),
-                                 HumanMessage(content=f"请将JD信息提取为结构化数据。\n{jd_text}")])
+    result = structured_model.invoke(
+        [
+            SystemMessage(
+                content="你是一名招聘信息解析专家，请将JD信息提取为结构化数据。对于岗位要求，如果没有明确要求，请返回空字符串。"
+            ),
+            HumanMessage(content=f"请将JD信息提取为结构化数据。\n{jd_text}"),
+        ]
+    )
     return result.model_dump_json(ensure_ascii=False)
 
 
@@ -73,30 +87,56 @@ def analyze_jd_info(jd_text: str) -> str:
 class ResumeProfile(BaseModel):
     """从简历中抽取的候选人画像（简历分析专家的结构化产物）。"""
 
-    name: str = Field(description="候选人的真实中文姓名，例如张三；禁止填写英文、类名或 ResumeProfile 字样")
+    name: str = Field(
+        description="候选人的真实中文姓名，例如张三；禁止填写英文、类名或 ResumeProfile 字样"
+    )
     age: str = Field(description="年龄，简历没写填未知")
     education: str = Field(description="最高学历与专业，简历没写填未知")
-    skills: list[str] = Field(description="掌握的技能/技术栈列表")
+    skills: list[str] = Field(
+        description="掌握的技能/技术栈列表，只放技术、框架、工具名称（如 Python、LangChain、RAG），不要放项目"
+    )
     target_position: str = Field(description="目标岗位，简历没写填未知")
     expected_salary: str = Field(description="期望薪资，简历没写填未知")
+    phone: str = Field(description="手机号码（11位数字），简历没写填未知")
+    projects: list[str] = Field(
+        description="项目经历或个人作品名称列表，如“招聘 Agent 项目”；简历没写项目则返回空列表"
+    )
 
 
-resume_system = SystemMessage(content=(
-    "你是简历分析专家。只根据简历原文抽取结构化信息："
-    "姓名、年龄、学历、技能、目标岗位、期望薪资。"
-    "简历没写的字段填“未知”，禁止编造。"
-    "姓名字段必须填候选人的真实中文姓名（如张三），"
-    "禁止填写任何英文、类名或 ResumeProfile 字样。"
-))
+resume_system = SystemMessage(
+    content=(
+        "你是简历分析专家。只根据简历原文抽取结构化信息："
+        "姓名、手机号、年龄、学历、技能、项目经历、目标岗位、期望薪资。"
+        "skills 只放技术、框架、工具的名词（如 Python、LangChain、RAG），"
+        "项目或作品经历一律放到 projects，不要放进 skills；"
+        "简历没写项目时 projects 返回空列表。"
+        "简历没写的字段填“未知”，禁止编造。"
+        "姓名字段必须填候选人的真实中文姓名（如张三），"
+        "禁止填写任何英文、类名或 ResumeProfile 字样。"
+    )
+)
 
-match_system = SystemMessage(content=(
-    "你是人岗匹配专家。你会收到候选人画像 JSON 和从岗位库检索到的若干份 JD。"
-    "请完成：1）从检索到的 JD 中选出与画像最匹配的 1 个岗位；"
-    "2）给出匹配度百分比（0-100%）；3）列出关键匹配点（技能、学历、方向等）；"
-    "4）列出差距点（如期望薪资与岗位薪资范围不符、经验或技能缺口）；"
-    "5）给出一句求职/招聘建议。"
-    "只允许依据画像和 JD 内容作答，禁止编造 JD 里不存在的信息。"
-))
+
+class MatchResult(BaseModel):
+    """人岗匹配的结构化结果。"""
+
+    matched_job: str = Field(description="最匹配的岗位名称")
+    match_score: int = Field(
+        description="匹配度分数，0-100 的整数，只填数字，不要带百分号"
+    )
+    report: str = Field(description="匹配理由：关键匹配点、差距点、一句建议")
+
+
+match_system = SystemMessage(
+    content=(
+        "你是人岗匹配专家。你会收到候选人画像 JSON 和从岗位库检索到的若干份 JD。"
+        "请完成：1）从检索到的 JD 中选出与画像最匹配的 1 个岗位；"
+        "2）给出匹配度百分比（0-100%）；3）列出关键匹配点（技能、学历、方向等）；"
+        "4）列出差距点（如期望薪资与岗位薪资范围不符、经验或技能缺口）；"
+        "5）给出一句求职/招聘建议。"
+        "只允许依据画像和 JD 内容作答，禁止编造 JD 里不存在的信息。"
+    )
+)
 
 
 @tool
@@ -108,9 +148,10 @@ def analyze_resume_worker(resume_text: str) -> str:
         ResumeProfile, method="function_calling"
     )
     profile = resume_model.invoke([resume_system, HumanMessage(content=resume_text)])
-    # 兜底：个别模型会把 Pydantic 类名误填进姓名字段，发现后纠正为“未知”
-    if profile.name.strip().lower() in {"resumeprofile", "resume_profile", ""}:
-        profile.name = "未知"
+    # 兜底1：模型没抽到姓名时，用正则从简历原文里抓中文名（如“张三，23岁”→张三）
+    if profile.name.strip().lower() in {"resumeprofile", "resume_profile", "", "未知"}:
+        match = re.search(r"[\u4e00-\u9fa5]{2,4}", resume_text)
+        profile.name = match.group() if match else "未知"
     return profile.model_dump_json(ensure_ascii=False)
 
 
@@ -127,11 +168,37 @@ def match_jd_worker(state: Annotated[list, InjectedState("messages")]) -> str:
     jd_docs = retriever.invoke(profile_json)
     jd_text = "\n---\n".join(doc.page_content for doc in jd_docs)
 
-    answer = chat_model.invoke([
-        match_system,
-        HumanMessage(content=f"【候选人画像】\n{profile_json}\n\n【相关岗位 JD】\n{jd_text}\n请给出匹配报告。"),
-    ])
+    answer = chat_model.invoke(
+        [
+            match_system,
+            HumanMessage(
+                content=f"【候选人画像】\n{profile_json}\n\n【相关岗位 JD】\n{jd_text}\n请给出匹配报告。"
+            ),
+        ]
+    )
     return answer.content
+
+
+@tool
+def match_resume_worker(profile_json: str) -> str:
+    """人岗匹配打分专家：输入候选人画像 JSON，检索最相关 JD，
+    返回结构化匹配结果（岗位、整数分数、理由）的 JSON。
+    """
+    jd_docs = retriever.invoke(profile_json)
+    jd_text = "\n---\n".join(doc.page_content for doc in jd_docs)
+    match_model = chat_model.with_structured_output(
+        MatchResult,
+        method="function_calling",
+    )
+    result = match_model.invoke(
+        [
+            match_system,
+            HumanMessage(
+                content=f"【候选人画像】\n{profile_json}\n\n【相关岗位 JD】\n{jd_text}"
+            ),
+        ]
+    )
+    return result.model_dump_json(ensure_ascii=False)
 
 
 @tool
@@ -149,17 +216,22 @@ def analyze_and_match_resume(resume_text: str) -> str:
     jd_text = "\n---\n".join(doc.page_content for doc in jd_docs)
 
     # 第三步：匹配专家对照画像与 JD 出报告
-    answer = chat_model.invoke([
-        match_system,
-        HumanMessage(content=(
-            f"【候选人画像】\n{profile_json}\n\n【相关岗位 JD】\n{jd_text}\n请给出匹配报告。"
-        )),
-    ])
+    answer = chat_model.invoke(
+        [
+            match_system,
+            HumanMessage(
+                content=(
+                    f"【候选人画像】\n{profile_json}\n\n【相关岗位 JD】\n{jd_text}\n请给出匹配报告。"
+                )
+            ),
+        ]
+    )
     return f"【候选人画像】\n{profile_json}\n\n{answer.content}"
-
 
 
 if __name__ == "__main__":
     print(retrieve_jd_info.invoke({"question": "agent开发工程师薪资是多少"}))
-    sample_jd_info = "岗位：Python 工程师，地点：成都，薪资：8K-12K，要求会 Python、Django。"
+    sample_jd_info = (
+        "岗位：Python 工程师，地点：成都，薪资：8K-12K，要求会 Python、Django。"
+    )
     print(analyze_jd_info.invoke({"jd_text": sample_jd_info}))
