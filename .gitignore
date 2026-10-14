@@ -22,3 +22,8 @@ chroma_db/
 .idea/
 .DS_Store
 .preview/
+
+# ===== Temporary probe scripts (local debugging only, not committed) =====
+_probe*.py
+_probe*.txt
+_check_db*.py

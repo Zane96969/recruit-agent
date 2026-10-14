@@ -201,6 +201,37 @@ def match_resume_worker(profile_json: str) -> str:
     return result.model_dump_json(ensure_ascii=False)
 
 
+match_by_jd_system = SystemMessage(
+    content=(
+        "你是人岗匹配专家。你会收到候选人画像 JSON 和一份用户指定的目标岗位 JD。"
+        "请完成：1）只依据这份 JD 评估候选人，matched_job 填该 JD 的岗位名称；"
+        "2）给出匹配度整数分数（0-100）；3）report 写关键匹配点、差距点、一句建议。"
+        "只允许依据画像和 JD 内容作答，禁止编造 JD 里不存在的信息。"
+    )
+)
+
+
+@tool
+def match_resume_by_jd(profile_json: str, jd_text: str) -> str:
+    """人岗匹配打分专家（指定JD版）：输入候选人画像 JSON 和目标岗位 JD 原文，
+    只依据传入的这份 JD 打分，不做向量库检索。
+    当用户指定了某份 JD（而不是让系统自己挑岗位）时使用。
+    """
+    match_model = chat_model.with_structured_output(
+        MatchResult,
+        method="function_calling",
+    )
+    result = match_model.invoke(
+        [
+            match_by_jd_system,
+            HumanMessage(
+                content=f"【候选人画像】\n{profile_json}\n\n【目标岗位 JD】\n{jd_text}"
+            ),
+        ]
+    )
+    return result.model_dump_json(ensure_ascii=False)
+
+
 @tool
 def analyze_and_match_resume(resume_text: str) -> str:
     """简历分析 + 人岗匹配一站式工具：输入简历原文，先产出候选人画像，

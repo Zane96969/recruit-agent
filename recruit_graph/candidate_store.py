@@ -88,7 +88,7 @@ def list_candidates(min_score: int = 0) -> list[dict]:
         conn.execute(_CREATE_TABLE)
         rows = conn.execute(
             """
-            SELECT name, match_score, matched_job, target_position
+            SELECT name, match_score, matched_job, target_position, id
             FROM candidates
             WHERE match_score >= ?
             ORDER BY match_score DESC
@@ -96,5 +96,117 @@ def list_candidates(min_score: int = 0) -> list[dict]:
             (min_score,),
         ).fetchall()
         return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def analyze_profile(resume_text: str) -> dict:
+    """第一步：只分析简历，返回画像 dict，不落库（供前端纠错）。"""
+    profile_json = analyze_resume_worker.invoke({"resume_text": resume_text})
+    return json.loads(profile_json)
+
+
+def save_candidate_from_profile(profile: dict, resume_text: str) -> dict:
+    """第二步：把（可能被用户改过的）画像入库。
+    同一份简历原文（content_hash）或手机号已存在 → UPDATE（保持原 id）；
+    否则 → INSERT 新行。
+    """
+    content_hash = hashlib.md5(resume_text.strip().encode("utf-8")).hexdigest()
+    phone = profile["phone"] if profile["phone"] != "未知" else None
+
+    match_result = json.loads(
+        match_resume_worker.invoke(
+            {"profile_json": json.dumps(profile, ensure_ascii=False)}
+        )
+    )
+
+    conn = _connect()
+    try:
+        conn.execute(_CREATE_TABLE)
+        row = conn.execute(
+            """
+            SELECT id FROM candidates
+            WHERE content_hash = ? OR (phone IS NOT NULL AND phone = ?)
+            """,
+            (content_hash, phone),
+        ).fetchone()
+        if row:
+            conn.execute(
+                """
+                UPDATE candidates SET
+                    name = ?, age = ?, education = ?, skills = ?,
+                    projects = ?, target_position = ?, expected_salary = ?,
+                    phone = ?, matched_job = ?, match_score = ?, content_hash = ?
+                WHERE id = ?
+                """,
+                (
+                    profile["name"],
+                    profile["age"],
+                    profile["education"],
+                    ",".join(profile["skills"]),
+                    ",".join(profile["projects"]),
+                    profile["target_position"],
+                    profile["expected_salary"],
+                    phone,
+                    match_result["matched_job"],
+                    match_result["match_score"],
+                    content_hash,
+                    row["id"],
+                ),
+            )
+            is_update = True
+        else:
+            conn.execute(
+                """
+                INSERT INTO candidates
+                    (name, age, education, skills, projects, target_position,
+                     expected_salary, phone, content_hash, created_at,
+                     matched_job, match_score)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    profile["name"],
+                    profile["age"],
+                    profile["education"],
+                    ",".join(profile["skills"]),
+                    ",".join(profile["projects"]),
+                    profile["target_position"],
+                    profile["expected_salary"],
+                    phone,
+                    content_hash,
+                    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    match_result["matched_job"],
+                    match_result["match_score"],
+                ),
+            )
+            is_update = False
+        conn.commit()
+    finally:
+        conn.close()
+
+    return {"profile": profile, "match": match_result, "is_update": is_update}
+
+
+def get_candidate_id(name: str) -> int | None:
+    """按姓名查候选人 id；找不到返回 None（供评分记录关联用）。"""
+    conn = _connect()
+    try:
+        conn.execute(_CREATE_TABLE)
+        row = conn.execute(
+            "SELECT id FROM candidates WHERE name = ?", (name,)
+        ).fetchone()
+        return row["id"] if row else None
+    finally:
+        conn.close()
+
+
+def delete_candidate(candidate_id: int):
+    """按 id 删除一个候选人，返回是否真的删掉了一行。"""
+    conn = _connect()
+    try:
+        conn.execute(_CREATE_TABLE)
+        cur = conn.execute("DELETE FROM candidates WHERE id = ?", (candidate_id,))
+        conn.commit()
+        return cur.rowcount > 0
     finally:
         conn.close()
