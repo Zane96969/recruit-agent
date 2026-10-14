@@ -26,8 +26,8 @@ vectorstore = Chroma(
 
 
 def split_sentences(text):
-    """按句号切成句子列表：补回句号、滤掉空串。"""
-    return [s + "。" for s in text.split("。") if s]
+    """按句号切成句子列表：补回句号、滤掉空白块。"""
+    return [s.strip() + "。" for s in text.split("。") if s.strip()]
 
 
 def upsert_jd(jd_id: int, jd_name: str, jd_text: str) -> int:

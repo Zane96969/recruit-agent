@@ -1,37 +1,20 @@
 import os
 import re
-from pathlib import Path
 from typing import Annotated
 
 from dotenv import load_dotenv
-from langchain_openai import OpenAIEmbeddings
-from langchain_core.tools import tool
-from langchain_chroma import Chroma
-from langchain_openai import ChatOpenAI
-from pydantic import BaseModel, Field
 from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.tools import tool
+from langchain_openai import ChatOpenAI
 from langgraph.prebuilt import InjectedState
+from pydantic import BaseModel, Field
+
+from recruit_graph.hybrid_retriever import hybrid_search
 
 load_dotenv()
 API_KEY = os.getenv("API_KEY")
 BASE_URL = os.getenv("BASE_URL", "https://api.deepseek.com")
 MODEL = os.getenv("MODEL", "deepseek-chat")
-
-embeddings = OpenAIEmbeddings(
-    api_key=API_KEY,
-    base_url=BASE_URL,
-    model="BAAI/bge-large-zh-v1.5",
-    check_embedding_ctx_length=False,
-)
-
-REPO_ROOT = Path(__file__).resolve().parent.parent
-
-vectorstore = Chroma(
-    collection_name="job_jd",
-    persist_directory=str(REPO_ROOT / "chroma_db"),
-    embedding_function=embeddings,
-)
-retriever = vectorstore.as_retriever(search_kwargs={"k": 2})
 
 
 @tool
@@ -39,7 +22,7 @@ def retrieve_jd_info(question: str) -> str:
     """
     根据用户问题检索相关的JD信息。
     """
-    docs = retriever.invoke(question)
+    docs = hybrid_search(question)
     content = [document.page_content for document in docs]
     return "\n".join(content)
 
@@ -165,7 +148,7 @@ def match_jd_worker(state: Annotated[list, InjectedState("messages")]) -> str:
     profile_json = tool_messages[-1].content if tool_messages else ""
 
     # 用画像去向量库检索最相关的 JD
-    jd_docs = retriever.invoke(profile_json)
+    jd_docs = hybrid_search(profile_json)
     jd_text = "\n---\n".join(doc.page_content for doc in jd_docs)
 
     answer = chat_model.invoke(
@@ -184,7 +167,7 @@ def match_resume_worker(profile_json: str) -> str:
     """人岗匹配打分专家：输入候选人画像 JSON，检索最相关 JD，
     返回结构化匹配结果（岗位、整数分数、理由）的 JSON。
     """
-    jd_docs = retriever.invoke(profile_json)
+    jd_docs = hybrid_search(profile_json)
     jd_text = "\n---\n".join(doc.page_content for doc in jd_docs)
     match_model = chat_model.with_structured_output(
         MatchResult,
@@ -243,7 +226,7 @@ def analyze_and_match_resume(resume_text: str) -> str:
     profile_json = analyze_resume_worker.invoke({"resume_text": resume_text})
 
     # 第二步：拿画像去向量库检索相关 JD
-    jd_docs = retriever.invoke(profile_json)
+    jd_docs = hybrid_search(profile_json)
     jd_text = "\n---\n".join(doc.page_content for doc in jd_docs)
 
     # 第三步：匹配专家对照画像与 JD 出报告
