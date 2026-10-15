@@ -1,0 +1,13 @@
+陈宇航，22岁，大连外国语大学软件工程专业本科，2027届应届毕业生。
+
+熟练掌握 Python，了解 HTTP、JSON、RESTful API 等基础概念，能熟练使用 Git 进行版本管理。
+熟悉大语言模型应用开发，熟悉 OpenAI 兼容接口，有 Prompt 工程、Function Calling 函数调用、RAG 检索增强的实战经验。
+熟悉 LangChain、LangGraph 框架，使用过 Chroma 向量数据库。
+
+项目经历：
+1. 招聘智能体（recruit-agent）开源项目：基于 LangGraph 多智能体编排（主管 + 子图），用 Function Calling 把检索、评分等封装成工具；RAG 部分实现了 BM25 关键词检索与向量检索的 RRF 混合，并用 bge-reranker 重排、做防幻觉控制；项目已在 GitHub 开源。
+2. 个人知识库问答机器人：基于 LangChain + Chroma，完成文档切块、向量检索、Rerank 重排与流式问答，能就上传的文档回答问题。
+
+目标岗位：AI Agent 开发工程师（校招/实习可转正），可去北京或远程。
+期望薪资：12K-15K。
+电话：13800000001。

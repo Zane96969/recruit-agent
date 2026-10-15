@@ -27,3 +27,6 @@ chroma_db/
 _probe*.py
 _probe*.txt
 _check_db*.py
+
+# ===== 真实脱敏简历（隐私，仅本地，不进公开仓库；虚构样本 data/resumes 可入库）=====
+data/resumes_real/

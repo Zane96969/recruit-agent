@@ -1,0 +1,13 @@
+郑浩然，25岁，大连理工大学计算机科学与技术专业本科，1年后端开发经验。
+
+Java 基础扎实，熟悉集合、多线程、JVM 内存模型及常用设计模式。
+熟练使用 Spring Boot、Spring Cloud、MyBatis 等主流框架，了解微服务架构，熟悉服务注册发现、配置中心。
+熟悉 MySQL、Redis，掌握数据库表结构设计、SQL 优化与缓存使用，了解 RabbitMQ、Docker。
+
+项目经历：
+1. 电商订单系统：基于 Spring Boot + Spring Cloud 的微服务项目，负责订单、支付模块；用 MySQL 做表结构设计和慢查询优化，用 Redis 做缓存和分布式锁，做过 JVM 参数调优。
+2. 后台管理系统：Spring Boot + MyBatis 实现 RESTful API，与前端对接，编写单元测试。
+
+目标岗位：Java 后端开发工程师，期望工作地点上海。
+期望薪资：14K-16K。
+电话：13800000004。
