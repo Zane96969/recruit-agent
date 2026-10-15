@@ -78,15 +78,19 @@ def get_position(jd_id: int) -> dict:
 
 
 @server.tool()
-def search_jd_knowledge(query: str, top_k: int = 3) -> list[dict]:
-    """用自然语言在岗位 JD 知识库里做混合检索（关键词 BM25 + 向量 + 精排），
+def search_jd_knowledge(
+    query: str, top_k: int = 3, use_rerank: bool = True
+) -> list[dict]:
+    """用自然语言在岗位 JD 知识库里做混合检索（关键词 BM25 + 向量），
     返回最相关的若干段 JD 原文片段（含片段编号）。
     当用户问某项技术/要求在哪些岗位出现、或只给模糊需求找岗位时使用。
     :param query: 自然语言问题，如“哪个岗位要求会 RAG 和 LangChain”
     :param top_k: 返回片段数量，默认 3
+    :param use_rerank: True=粗排后再用 bge-reranker 精排（默认，最准、稍慢）；
+        False=只做 BM25+向量粗排（更快、不依赖精排服务，精排不可用时可关掉）
     """
     try:
-        docs = hybrid_search(query, top_k=top_k)
+        docs = hybrid_search(query, top_k=top_k, use_rerank=use_rerank)
         return [
             {"id": doc.metadata.get("id"), "text": doc.page_content} for doc in docs
         ]

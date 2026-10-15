@@ -88,18 +88,31 @@ def rerank_candidates(query: str, candidates, top_k: int = 3):
     return [candidates[item["index"]] for item in results]
 
 
-def hybrid_search(query: str, candidate_n: int = 8, top_k: int = 3):
+def hybrid_search(
+    query: str,
+    candidate_n: int = 8,
+    top_k: int = 3,
+    use_rerank: bool = True,
+):
     """混合检索总入口：BM25+向量 RRF 粗排 → bge-reranker 精排。
-    返回 LangChain Document 列表（与 retriever.invoke 同类型）。"""
+    返回 LangChain Document 列表（与 retriever.invoke 同类型）。
+    use_rerank=True（默认）：粗排后再精排，结果最准、但多调一次模型、稍慢；
+    use_rerank=False：只做 BM25+向量粗排，更快、且不依赖精排服务。"""
     # 第一组：粗排，多捞一些候选（candidate_n 个）
     candidates = hybrid_retrieve(query, top_n=candidate_n)
 
-    # 第二组：精排压到 top_k。rerank 只是“增强”不是“刚需”，
-    # 它挂了就自动降级：直接用粗排（RRF）前 top_k 条，检索整体不挂。
-    try:
-        ranked = rerank_candidates(query, candidates, top_k=top_k)
-    except Exception as e:  # noqa: BLE001
-        print(f"[降级] rerank 精排失败（{type(e).__name__}），退回 BM25+向量粗排结果")
+    if use_rerank:
+        # 第二组：精排压到 top_k。rerank 只是“增强”不是“刚需”，
+        # 它挂了就自动降级：直接用粗排（RRF）前 top_k 条，检索整体不挂。
+        try:
+            ranked = rerank_candidates(query, candidates, top_k=top_k)
+        except Exception as e:  # noqa: BLE001
+            print(
+                f"[降级] rerank 精排失败（{type(e).__name__}），退回 BM25+向量粗排结果"
+            )
+            ranked = candidates[:top_k]
+    else:
+        # 只要粗排：直接取 RRF 融合后的前 top_k，省掉一次模型调用，更快。
         ranked = candidates[:top_k]
 
     # 第三组：把每个 (块id, 文本) 包成 Document 盒子，返回类型和 retriever.invoke 一致

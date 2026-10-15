@@ -121,9 +121,12 @@ def api_get_position(jd_id: int):
 def api_search(
     query: str = Query(..., description="自然语言问题，如：哪个岗位要求会 RAG"),
     top_k: int = Query(3, ge=1, le=10, description="返回片段数量"),
+    use_rerank: bool = Query(
+        True, description="true=粗排+精排（默认，最准）；false=只粗排（更快）"
+    ),
 ):
-    """在岗位 JD 知识库做混合检索（BM25 + 向量 + RRF + 精排）。"""
-    docs = hybrid_search(query, top_k=top_k)
+    """在岗位 JD 知识库做混合检索（BM25 + 向量 + RRF，可选 bge 精排）。"""
+    docs = hybrid_search(query, top_k=top_k, use_rerank=use_rerank)
     return [{"id": doc.metadata.get("id"), "text": doc.page_content} for doc in docs]
 
 

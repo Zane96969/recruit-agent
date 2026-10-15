@@ -18,11 +18,13 @@ MODEL = os.getenv("MODEL", "deepseek-chat")
 
 
 @tool
-def retrieve_jd_info(question: str) -> str:
+def retrieve_jd_info(question: str, use_rerank: bool = True) -> str:
     """
     根据用户问题检索相关的JD信息。
+    use_rerank 为 True 时走“BM25+向量粗排 + bge-reranker 精排”，结果更准、稍慢；
+    为 False 时只做 BM25+向量粗排，更快，且不依赖精排服务（适合精排不可用时）。
     """
-    docs = hybrid_search(question)
+    docs = hybrid_search(question, use_rerank=use_rerank)
     content = [document.page_content for document in docs]
     return "\n".join(content)
 
