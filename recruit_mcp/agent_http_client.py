@@ -16,6 +16,7 @@
 
 import asyncio
 import os
+import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -25,10 +26,16 @@ from langchain_openai import ChatOpenAI
 
 # 本文件在 recruit_mcp/ 下，上一级即仓库根目录，统一从根目录读 .env
 REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT))
 load_dotenv(REPO_ROOT / ".env")
+
+from recruit_mcp.observability import ObservabilityHandler  # noqa: E402
 
 # 常驻的 MCP 服务地址（http_app.py 里 /mcp 端点）
 MCP_URL = "http://127.0.0.1:8000/mcp"
+
+# 每轮 Agent 运行的可观测汇总（JSONL：一行一条记录），已在 .gitignore 排除
+LOG_FILE = REPO_ROOT / "logs" / "agent_runs.jsonl"
 
 # 演示用虚构简历（与 data/resumes 同为拟真数据）
 SAMPLE_RESUME = (
@@ -41,19 +48,25 @@ SAMPLE_RESUME = (
 
 
 async def ask(agent, title: str, question: str):
-    """向 Agent 提一个问题，打印标题与最终回答。"""
+    """向 Agent 提一个问题，打印标题与最终回答，并记录可观测日志。"""
     print(f"\n===== {title} =====")
+    # 每轮新建一个回调处理器：它只统计这一次 ask 的工具调用与 token
+    handler = ObservabilityHandler(run_title=title, log_path=LOG_FILE)
     try:
         result = await agent.ainvoke(
             {"messages": [{"role": "user", "content": question}]},
             # recursion_limit：模型“思考↔调工具”每来回算一步，
             # 15 步封顶，防止它卡住后反复调同一个工具把循环跑爆。
-            config={"recursion_limit": 15},
+            # callbacks：把可观测回调挂上，框架每走一步都会回调它。
+            config={"recursion_limit": 15, "callbacks": [handler]},
         )
         print(result["messages"][-1].content)
     except Exception as e:
         # 循环超限 / 模型报错 / 网络抖动都在这里兜住，不让整个演示崩掉
         print(f"[Agent 执行异常] {type(e).__name__}: {e}")
+    finally:
+        # 无论成功还是异常，都打印（并落盘）本轮汇总
+        handler.print_summary()
 
 
 async def main():
