@@ -18,6 +18,9 @@
 - **人工审批（Human-in-the-loop）**：工具执行前暂停，把“要调的工具 + 参数”交人确认，批准才执行、拒绝则中止。
 - **MCP 工具服务（真实后端）**：8 个标准 MCP 工具直接复用项目真实的存储层与检索层——岗位侧 `list_positions / get_position / search_jd_knowledge`，简历侧 `analyze_resume / match_resume_with_jd`（只读、不写库）、`screen_candidate / rank_candidates / delete_candidate`（写库）；MCP 端与 Gradio、种子脚本共用同一套函数，结果一致。Agent 一次握手发现全部工具、自主选择并提参；换 Agent 不改工具、换工具不改 Agent。
 - **服务化部署（FastAPI + MCP Streamable HTTP）**：`recruit_mcp/http_app.py` 起一个常驻进程，把同一套后端同时暴露成普通 REST（`/api/...`）与标准 MCP（`/mcp`）；传输从 stdio 的"一个客户端拉起一个本地进程"升级为"一个服务、多个客户端通过 URL 共享"，Agent 与工具代码零改动（只改连接配置），另附 Swagger 文档（`/docs`）与健康检查。
+- **五层容错（健壮性）**：① LLM 客户端 `timeout=60 + max_retries=3` 兜网络抖动；② 每个 MCP 工具函数体内 try/except，返回结构化 `{error, detail}`（不用装饰器，避免破坏工具参数 schema）；③ 串联流程（简历分析→产出校验→匹配→写库）失败即短路、绝不写脏数据，关键步骤带指数退避重试；④ 编排层 system prompt 约定"工具返回 error 就停手、不编造结果"；⑤ 检索层 rerank 精排失败自动降级回 RRF 粗排，保证仍能出结果。
+- **检索可切换精排/粗排（`use_rerank`）**：混合检索默认"BM25+向量 RRF 粗排 → bge-reranker 精排"拿最准结果；也可 `use_rerank=False` 只做 RRF 粗排，更快且不依赖精排服务。开关从 `hybrid_search` 一路透传到 LangGraph 工具、MCP 工具与 REST（`/api/search?use_rerank=`）。
+- **可观测（Observability）**：基于 LangChain 异步回调 `AsyncCallbackHandler` 统一记录每次 **LLM 调用**（耗时、输入/输出 token）与**工具调用**（名称、入参、耗时、成败），控制台实时打印每一步、每轮结束给汇总，并追加写成 JSONL（`logs/agent_runs.jsonl`，已 gitignore）；两个 MCP 客户端零侵入挂上即可。底层机制与 Langfuse / LangSmith 相同（一个 callback handler），后续可一键替换为平台 handler。
 - **多智能体串行双专家**：Supervisor（总指挥）按固定流程依次派单——简历分析专家先产出结构化画像，人岗匹配专家再经 **InjectedState** 自动读取画像（大段数据走共享状态，模型只决定“调谁”、不当搬运工），从向量库检索 Top-K JD 并给出匹配度百分比、匹配点与差距建议；专家结果回流主管后再派下一单，串行顺序由状态机强制保证。与 MCP 版的区别：MCP 版匹配需手动同时提供简历与 JD 原文，本版**只给一份简历即可自动找岗**。网页对话层另把两步封成一个复合工具，避免把流程正确性赌在模型自律上。
 - **多智能体并行编排**：① **静态并行**（`resume_parallel_agents.py`）——一份简历 + 目标 JD，技术栈 / 薪资 / 到岗稳定性三个互不依赖的专家**同时开工**（fan-out），三块结论经 reducer（`Annotated[list, operator.add]`）累加、汇总节点自动等齐（fan-in），总耗时≈最慢的一个专家（实测约 1.4 秒，而非三者相加）；② **Send 动态扇出**（`resume_batch_screen.py`）——N 份简历批量初筛，`dispatch` 返回 `Send` 列表、运行时按简历份数自动复制 N 个专家，改名单不用改图。三者选型：**有依赖走串行、无依赖的多维评估走静态并行、数量不定的批量任务走 Send**。
 - **统一调度主管（Supervisor + subgraph）**：顶层大模型主管用 `with_structured_output` + `Literal` 把人话语义收敛成三个合法车间之一（`serial_all / parallel_all / batch_all`），经条件边派发到对应**已编译子图**；语义判断交模型、确定性流程交图结构（模型只能选路、不能造路），三个真实场景实测全部正确路由（`resume_unified_supervisor.py`）。
@@ -117,6 +120,7 @@ recruit-agent/
 │   └── app.py                # StateGraph ReAct 主管 + SqliteSaver 记忆 + interrupt 人工审批
 ├── recruit_mcp/              # MCP 工具服务 + HTTP 服务化（同一套真实后端，可被任意 MCP Agent 复用）
 │   ├── recruit_server.py     # FastMCP Server：8 个工具复用 SQLite/Chroma/混合检索（stdio 入口）
+│   ├── observability.py      # 可观测：异步回调记录每轮 LLM/工具调用、token、耗时（控制台 + JSONL）
 │   ├── agent_recruit_client.py  # Agent 经 MCP 自主选工具的演示（stdio，写库场景默认关闭）
 │   ├── http_app.py           # FastAPI 常驻服务：同一套后端同时暴露 REST(/api) 与 MCP(/mcp)
 │   └── agent_http_client.py  # Agent 经 Streamable HTTP 连常驻服务的演示（只改连接方式）
@@ -195,7 +199,7 @@ REST 接口一览（与 8 个 MCP 工具共用同一套后端函数）：
 | GET | `/health` | 健康检查 |
 | GET | `/api/positions` | 岗位列表 |
 | GET | `/api/positions/{jd_id}` | 单份 JD 详情（找不到返回 404） |
-| GET | `/api/search?query=&top_k=` | 岗位知识库混合检索（BM25+向量+RRF+精排） |
+| GET | `/api/search?query=&top_k=&use_rerank=` | 岗位知识库混合检索（BM25+向量+RRF；`use_rerank` 默认 true 走 bge 精排，false 只粗排） |
 | POST | `/api/analyze-resume` | 简历画像只读分析（不写库） |
 | POST | `/api/match-resume` | 简历与给定 JD 临时对照（不写库） |
 | POST | `/api/screen-candidate` | 完整初筛并写入候选人库 |
@@ -212,6 +216,62 @@ stdio 与 Streamable HTTP 对比：
 | 业务代码 | 同一套 8 个工具、同一个 Agent | 只改连接配置，工具与 Agent 零改动 |
 
 > 本地默认只监听回环地址 127.0.0.1，且 FastMCP 默认只允许 localhost 访问；部署到服务器时需把 host 改为 `0.0.0.0`、在 FastMCP 配置里放开访问来源（TransportSecurity），并自行加鉴权 / 网关与 CORS，再对公网开放。
+
+## 工程化：健壮性、降级与可观测
+
+Agent 不是"能跑通"就够，真实环境里模型会超时、工具会报错、精排服务会不可用。本项目在主流程之外补了三层工程能力。
+
+### 1. 五层容错
+
+| 层 | 防线 | 做法 |
+| --- | --- | --- |
+| ① LLM 层 | 网络抖动 / 模型偶发报错 | 模型客户端统一 `timeout=60`、`max_retries=3` |
+| ② 工具层 | 单个工具内部异常 | 工具函数体内 try/except，返回结构化 `{"error","detail"}`（不用装饰器，避免 FastMCP 丢掉参数类型注解、破坏工具 schema） |
+| ③ 串联层 | 后一步依赖前一步结果 | 写库链路拆成"简历分析 → 产出校验 → 匹配 → 写库"，任一步失败立即**短路**、绝不碰库；关键步骤用 `_run_step` 做指数退避重试 |
+| ④ 编排层 | 工具失败后 Agent 还在瞎调 | system prompt 约定：看到工具返回 `error` 就停止调用依赖它的后续工具、不编造、如实告知 |
+| ⑤ 检索层 | 精排服务不可用 | rerank 精排包在 try/except 里，失败自动降级回 BM25+向量 RRF 粗排结果 |
+
+设计取舍：**核心数据依赖用快速失败（Fail Fast）**，避免脏数据；**非核心增强用降级**（精排挂了就用粗排），保证仍有可用结果。
+
+### 2. 精排 / 粗排开关
+
+`hybrid_search(query, top_k=3, use_rerank=True)` 多一个布尔参数：
+
+- `use_rerank=True`（默认）：BM25 + 向量 RRF 粗排 → bge-reranker 精排，最准、多一次模型调用；
+- `use_rerank=False`：只做 RRF 粗排，更快、完全不依赖精排服务。
+
+开关一路透传到四个入口：`hybrid_search`（核心）、LangGraph 工具 `retrieve_jd_info`、MCP 工具 `search_jd_knowledge`（参数会进工具 schema，Agent 自己可见）、REST `/api/search?use_rerank=false`。
+
+### 3. 可观测：每轮工具调用 / token / 耗时日志
+
+用 LangChain 的**回调（Callback）**机制实现：框架在"模型开始/结束、工具开始/结束"这些节点自动回调你写好的函数，因此业务代码零侵入——只要在 `ainvoke` 的 `config` 里挂上 handler：
+
+```python
+from recruit_mcp.observability import ObservabilityHandler
+
+handler = ObservabilityHandler(run_title="场景1", log_path=LOG_FILE)
+await agent.ainvoke(
+    {"messages": [{"role": "user", "content": "..."}]},
+    config={"recursion_limit": 15, "callbacks": [handler]},
+)
+handler.print_summary()
+```
+
+运行时实时看到每一步（LLM 两次 + 工具一次），结束给汇总：
+
+```text
+  [LLM] 开始：ChatOpenAI
+  [LLM] 结束：1.04s | 输入 198 / 输出 24 tokens
+  [工具] 开始：add  入参={'a': 3, 'b': 5}
+  [工具] 成功：add  0.00s
+  [LLM] 开始：ChatOpenAI
+  [LLM] 结束：0.53s | 输入 242 / 输出 10 tokens
+  —— 本轮汇总：LLM 调用 2 次，工具调用 1 次（失败 0），token 输入 440 / 输出 34 / 合计 474
+```
+
+- 每轮汇总还会追加一行 JSON 到 `logs/agent_runs.jsonl`（JSONL：一行一条记录），便于事后统计成本、失败率、各工具耗时；
+- token 兼容新旧两种返回位置（`message.usage_metadata` 与 `llm_output["token_usage"]`）；
+- 这正是 Langfuse / LangSmith 的底层原理（都是一个 callback handler）。想要 Web 可视化界面时，把 `ObservabilityHandler` 换成 Langfuse 的 `CallbackHandler`（`config={"callbacks":[langfuse_handler]}`）即可，业务代码无需改动。
 
 ## 数据说明
 
@@ -230,6 +290,9 @@ stdio 与 Streamable HTTP 对比：
 - [x] **Web 界面（Gradio）**：本地网页聊天、后端打印消息类型与工具名、工具路由可观测（`recruit_graph/web_agent.py`）。
 - [x] **思考过程可视化 + 网页记忆**：工具调用折叠块按顺序直播、每步可追溯；checkpointer + thread_id 支撑跨轮记忆（`recruit_graph/web_stream_agent.py`）。
 - [x] **统一主管（Supervisor）路由三种编排**：顶层大模型主管按人话语义三选一，派发到串行 / 静态并行 / Send 三个**已编译 subgraph**（`resume_unified_supervisor.py`）；`Literal` 锁死合法路由、条件边派单，模型只选路不造路，三个真实场景实测全部正确。
+- [x] **五层容错与健壮性**：LLM 超时重试、工具结构化 error、串联短路 + 退避重试、编排层停手、rerank 降级，避免脏数据与级联失败（`recruit_mcp/recruit_server.py`、`recruit_graph/candidate_store.py`、`hybrid_retriever.py`）。
+- [x] **精排/粗排开关**：`hybrid_search(..., use_rerank=)` 一路透传到 LangGraph 工具 / MCP / REST，在最准（精排）与最快（粗排）间切换。
+- [x] **可观测（Observability）**：基于 LangChain `AsyncCallbackHandler` 记录每轮 LLM/工具调用、token、耗时与成败，控制台实时日志 + JSONL 落盘，可平滑替换为 Langfuse（`recruit_mcp/observability.py`）。
 - [ ] **部署上线**：真实数据、服务器部署、公网可访问。
 - [ ] **能力 B（对标分析）**：一批同类 JD 反推合理技术栈与薪资行情；高级版用 Deep Agents 做"招聘行业深度研究 Agent"。
 
