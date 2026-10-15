@@ -116,8 +116,13 @@ def match_resume_with_jd(resume_text: str, jd_text: str) -> dict:
     :param resume_text: 简历原文
     :param jd_text: 岗位 JD 原文，由用户直接提供，不必在岗位库中
     """
+    # 第一步：简历分析。它是匹配的刚需，失败就短路，绝不能把错误当画像喂给下一步。
     try:
         profile_json = analyze_resume_worker.invoke({"resume_text": resume_text})
+    except Exception as e:
+        return {"error": "简历分析失败，无法继续匹配", "detail": str(e)}
+    # 第二步：拿着第一步的画像去匹配指定 JD。
+    try:
         match_json = match_resume_by_jd.invoke(
             {"profile_json": profile_json, "jd_text": jd_text}
         )
@@ -126,7 +131,7 @@ def match_resume_with_jd(resume_text: str, jd_text: str) -> dict:
             "match": json.loads(match_json),
         }
     except Exception as e:
-        return {"error": "简历与岗位匹配失败", "detail": str(e)}
+        return {"error": "人岗匹配失败", "detail": str(e)}
 
 
 # ===================== 业务闭环（写 SQLite） =====================

@@ -3,6 +3,7 @@
 import hashlib
 import json
 import sqlite3
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -36,15 +37,56 @@ def _connect():
     return conn
 
 
+def _run_step(step_name: str, func, payload: dict, retries: int = 2):
+    """执行串联链里的一个步骤，失败时整体重试，全失败就抛带步骤名的错误。
+
+    - step_name：步骤名（如“简历分析”），出错时用来标明卡在哪一步；
+    - func：这一步要执行的可调用对象，通常是 LangChain 工具的 .invoke；
+    - payload：传给 func 的参数（dict）；
+    - retries：失败后最多整体重试几次，重试间隔逐次拉长（1s、2s）。
+    """
+    last_error = None
+    for attempt in range(retries + 1):
+        try:
+            return func(payload)
+        except Exception as e:  # noqa: BLE001
+            last_error = e
+            if attempt < retries:
+                time.sleep(attempt + 1)  # 退避一下，不立刻猛打
+    raise RuntimeError(f"步骤【{step_name}】失败：{last_error}") from last_error
+
+
 def save_candidate(resume_text: str) -> dict:
     """分析简历 → 打分 → 落库，返回画像与匹配结果；重复简历会覆盖。"""
-    profile_json = analyze_resume_worker.invoke({"resume_text": resume_text})
+    # 第一步：简历分析（依赖 LLM）。它是整条链的刚需，失败整体重试后仍不行就短路。
+    try:
+        profile_json = _run_step(
+            "简历分析",
+            analyze_resume_worker.invoke,
+            {"resume_text": resume_text},
+        )
+    except Exception as e:
+        # 画像没拿到，后面匹配/写库都无从谈起，直接返回，绝不碰数据库。
+        return {"error": "简历分析失败，未进行匹配与入库", "detail": str(e)}
+
     profile = json.loads(profile_json)
+    # 产出校验：没抛异常但关键字段缺失，同样视同上游不合格，立刻短路。
+    if not profile.get("name") or profile.get("name") == "未知":
+        return {"error": "简历画像缺少姓名，无法入库，请补充简历后重试"}
 
-    match_result = json.loads(
-        match_resume_worker.invoke({"profile_json": profile_json})
-    )
+    # 第二步：人岗匹配，吃的是第一步产出的画像；失败同样短路，不进写库。
+    try:
+        match_result = json.loads(
+            _run_step(
+                "人岗匹配",
+                match_resume_worker.invoke,
+                {"profile_json": profile_json},
+            )
+        )
+    except Exception as e:
+        return {"error": "人岗匹配失败，候选人未入库", "detail": str(e)}
 
+    # 第三步：写库。前两步都成功、数据都齐了才走到这里。
     content_hash = hashlib.md5(resume_text.strip().encode("utf-8")).hexdigest()
     phone = profile["phone"] if profile["phone"] != "未知" else None
 
@@ -75,6 +117,8 @@ def save_candidate(resume_text: str) -> dict:
             ),
         )
         conn.commit()
+    except Exception as e:
+        return {"error": "写库失败，画像与匹配结果未保存", "detail": str(e)}
     finally:
         conn.close()
 
