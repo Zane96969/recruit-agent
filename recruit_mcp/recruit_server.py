@@ -1,110 +1,148 @@
-"""招聘业务 MCP Server。
+"""招聘业务 MCP Server（真实后端能力版）。
 
-把两个招聘能力按 MCP 标准做成工具：
-- analyze_resume：输入简历原文，返回结构化候选人画像；
-- match_resume_jd：输入简历 + 岗位 JD，返回匹配等级、匹配点、差距点、建议。
+把 recruit_graph 里的真实招聘能力按 MCP 标准暴露成工具，任何 MCP 客户端
+（Claude Desktop / 本项目的 Agent / 命令行）一次握手即可发现并调用：
 
-任何支持 MCP 的 Agent（本项目用 LangChain + langchain-mcp-adapters）
-都能一次握手发现并自主调用这两个工具。
+- 岗位库（只读）：
+  list_positions / get_position / search_jd_knowledge
+- 简历分析（只读，不写库）：
+  analyze_resume / match_resume_with_jd
+- 业务闭环（写 SQLite）：
+  screen_candidate / rank_candidates / delete_candidate
+
+与早期玩具版的区别：工具不再自己写一套简化的 prompt，而是直接复用项目真实的
+SQLite 存储层、Chroma 向量库与“BM25 + 向量 + RRF + rerank”混合检索，
+结果和 Gradio 页面、seed 脚本完全一致。
+
+传输方式：默认 stdio（本地 MCP 客户端各起一个进程、即插即用）；
+跨网络的 Streamable HTTP 部署留到“部署上线”阶段开启（工具本身与传输无关）。
 """
 
-import os
+import json
+import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
-from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_openai import ChatOpenAI
 from mcp.server.fastmcp import FastMCP
-from pydantic import BaseModel, Field
 
-# 本文件在 recruit_mcp/ 下，上一级即仓库根目录，统一从根目录读 .env
+# 本文件在 recruit_mcp/ 下，上一级即仓库根目录
 REPO_ROOT = Path(__file__).resolve().parent.parent
-load_dotenv(REPO_ROOT / ".env")
 
-API_KEY = os.getenv("API_KEY")
-BASE_URL = os.getenv("BASE_URL")
-MODEL = os.getenv("MODEL")
+# 必须在 import recruit_graph 之前把根目录 .env 载入环境变量：
+# 向量库 / 大模型相关模块在 import 时就会读取 API_KEY、BASE_URL。
+load_dotenv(REPO_ROOT / ".env")
+# 让独立进程也能 import recruit_graph 包
+sys.path.insert(0, str(REPO_ROOT))
+
+from recruit_graph.candidate_store import (  # noqa: E402
+    analyze_profile,
+    delete_candidate as delete_candidate_row,
+    list_candidates,
+    save_candidate,
+)
+from recruit_graph.graph_tools import (  # noqa: E402
+    analyze_resume_worker,
+    match_resume_by_jd,
+)
+from recruit_graph.hybrid_retriever import hybrid_search  # noqa: E402
+from recruit_graph.jd_store import get_jd, list_jds  # noqa: E402
 
 server = FastMCP("recruit_server")
 
-chat_model = ChatOpenAI(
-    api_key=API_KEY,
-    base_url=BASE_URL,
-    model=MODEL,
-)
 
-
-# ===================== 结构化输出 Schema =====================
-class RecruitProfile(BaseModel):
-    """从简历中抽取的候选人画像。"""
-
-    profile_name: str = Field(..., description="候选人姓名，如 张三")
-    tech_stack: list[str] | None = Field(default=None, description="候选人技术栈")
-    years_of_experience: str | None = Field(
-        default=None, description="工作经验年限，只填如 5年"
-    )
-    expected_salary: str | None = Field(
-        default=None, description="期望薪资，如 20K-25K"
-    )
-    education: str | None = Field(default=None, description="学历，只填如 本科")
-    highlight_projects: list[str] | None = Field(
-        default=None, description="亮点项目"
-    )
-
-
-class MatchResult(BaseModel):
-    """简历与岗位 JD 的对照结果。"""
-
-    match_level: str = Field(..., description="匹配等级，只填：高/中/低")
-    match_points: list[str] | None = Field(default=None, description="匹配点")
-    gap_points: list[str] | None = Field(
-        default=None, description="差距点，不满足的要求"
-    )
-    suggestion: str | None = Field(default=None, description="给招聘方的一句建议")
-
-
-# ===================== MCP 工具 =====================
+# ===================== 岗位库（只读） =====================
 @server.tool()
-def analyze_resume(resume_text: str) -> str:
-    """分析一份简历，返回候选人画像（技术栈、年限、期望薪资、学历、亮点）。
-    当用户发来一段简历，或要求“分析这份简历 / 看看这个候选人”时使用。
+def list_positions() -> list[dict]:
+    """列出岗位库中所有在招岗位（编号、岗位名称、录入时间），最新在前。
+    当用户想知道“现在有哪些岗位 / 岗位列表”时使用，不返回 JD 全文。
     """
-    structured_model = chat_model.with_structured_output(
-        RecruitProfile,
-        method="function_calling",
-    )
-    profile = structured_model.invoke(
-        [
-            SystemMessage(
-                content="你是简历分析助手，只根据简历内容抽取信息；简历没写的字段留空，禁止编造。"
-            ),
-            HumanMessage(content=resume_text),
-        ]
-    )
-    return profile.model_dump_json(ensure_ascii=False)
+    return list_jds()
 
 
 @server.tool()
-def match_resume_jd(resume_text: str, jd_text: str) -> str:
-    """对照简历和岗位 JD，返回匹配等级、匹配点、差距点和建议。
-    当用户同时提供简历和岗位，或要求“看看这个候选人配不配这个岗”时使用。
+def get_position(jd_id: int) -> dict:
+    """按岗位编号查看一份岗位的完整 JD 原文。
+    当用户已经指定岗位编号、或要看某个岗位的详细要求时使用。
+    :param jd_id: 岗位编号，来自 list_positions 返回的 id
     """
-    structured_model = chat_model.with_structured_output(
-        MatchResult,
-        method="function_calling",
+    jd = get_jd(jd_id)
+    if not jd:
+        return {"error": f"未找到编号为 {jd_id} 的岗位"}
+    return jd
+
+
+@server.tool()
+def search_jd_knowledge(query: str, top_k: int = 3) -> list[dict]:
+    """用自然语言在岗位 JD 知识库里做混合检索（关键词 BM25 + 向量 + 精排），
+    返回最相关的若干段 JD 原文片段（含片段编号）。
+    当用户问某项技术/要求在哪些岗位出现、或只给模糊需求找岗位时使用。
+    :param query: 自然语言问题，如“哪个岗位要求会 RAG 和 LangChain”
+    :param top_k: 返回片段数量，默认 3
+    """
+    docs = hybrid_search(query, top_k=top_k)
+    return [{"id": doc.metadata.get("id"), "text": doc.page_content} for doc in docs]
+
+
+# ===================== 简历分析（只读，不写库） =====================
+@server.tool()
+def analyze_resume(resume_text: str) -> dict:
+    """只解析一份简历、抽取结构化候选人画像（姓名、学历、技能、项目、
+    目标岗位、期望薪资、电话），不会写数据库。
+    当用户只想“分析这份简历 / 看看画像抽得准不准”，或想先人工确认再入库时使用。
+    :param resume_text: 简历原文
+    """
+    return analyze_profile(resume_text)
+
+
+@server.tool()
+def match_resume_with_jd(resume_text: str, jd_text: str) -> dict:
+    """把一份简历与“用户直接给的一段 JD 原文”做临时对照，
+    返回画像 + 匹配岗位、分数、理由；只读，不查岗位库、不写数据库。
+    当用户手里拿着具体 JD、问“这个人配不配这个岗”时使用。
+    :param resume_text: 简历原文
+    :param jd_text: 岗位 JD 原文，由用户直接提供，不必在岗位库中
+    """
+    profile_json = analyze_resume_worker.invoke({"resume_text": resume_text})
+    match_json = match_resume_by_jd.invoke(
+        {"profile_json": profile_json, "jd_text": jd_text}
     )
-    result = structured_model.invoke(
-        [
-            SystemMessage(
-                content="你是简历匹配助手，只根据简历和岗位JD分析；匹配等级只填高/中/低，没有差距就留空，禁止编造。"
-            ),
-            HumanMessage(
-                content=f"简历内容：{resume_text}\n岗位描述：{jd_text}"
-            ),
-        ]
-    )
-    return result.model_dump_json(ensure_ascii=False)
+    return {
+        "profile": json.loads(profile_json),
+        "match": json.loads(match_json),
+    }
+
+
+# ===================== 业务闭环（写 SQLite） =====================
+@server.tool()
+def screen_candidate(resume_text: str) -> dict:
+    """对一份简历做完整初筛：抽取画像 → 与岗位库全部 JD 横向匹配打分 →
+    把候选人与匹配结果写入候选人库，返回画像和匹配结果。
+    当用户要“把这个人收进系统初筛 / 入库并匹配岗位”时使用，会写数据库。
+    :param resume_text: 简历原文
+    """
+    return save_candidate(resume_text)
+
+
+@server.tool()
+def rank_candidates(min_score: int = 0) -> list[dict]:
+    """查看候选人匹配排名（按匹配分从高到低），可只看某个分数线以上的人。
+    当用户问“现在库里候选人怎么排 / 哪些人最匹配 / 给我排名”时使用。
+    :param min_score: 最低匹配分，默认 0 表示返回全部候选人
+    """
+    return list_candidates(min_score=min_score)
+
+
+@server.tool()
+def delete_candidate(candidate_id: int) -> dict:
+    """按候选人编号删除一名候选人，会写数据库且不可恢复。
+    当用户明确要求删除某个候选人时使用。
+    :param candidate_id: 候选人编号，来自 rank_candidates 返回的 id
+    """
+    deleted = delete_candidate_row(candidate_id)
+    return {"candidate_id": candidate_id, "deleted": deleted}
 
 
 if __name__ == "__main__":
+    # 默认 stdio：本地 MCP 客户端（Claude Desktop / Agent）拉起一个进程即可调用。
+    # 网络多客户端共享用 streamable HTTP，留到“部署上线”阶段开启。
     server.run()

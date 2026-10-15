@@ -1,10 +1,15 @@
-"""Agent 经 MCP 自主调用 recruit_server 的演示。
+"""Agent 经 MCP 自主调用 recruit_server（真实后端版）的演示。
 
 运行后 Agent 会：
-1. 启动并连接 recruit_server（stdio），自动发现两个工具；
-2. 根据问题自主选择工具、提取参数、调用并给出结论：
-   - “分析这份简历”   → analyze_resume
-   - “看看配不配这个岗” → match_resume_jd
+1. 用 stdio 拉起 recruit_server，一次握手发现全部招聘工具；
+2. 就几个真实问题自主选工具、提参、调用并作答：
+   - “岗位库里有哪些岗位”          → list_positions
+   - “检索要 RAG/LangChain 的岗位”  → search_jd_knowledge
+   - “只分析这份简历、先别入库”      → analyze_resume（只读）
+
+写库工具（screen_candidate / rank_candidates / delete_candidate）默认不触发，
+避免每次演示都往候选人库写假人；把下方 WRITE_DEMO 改为 True 可追加演示
+“完整初筛落库 + 查看排名”。
 """
 
 import asyncio
@@ -24,6 +29,26 @@ load_dotenv(REPO_ROOT / ".env")
 # 同目录下的 Server 文件（绝对路径，跨平台）
 SERVER_FILE = Path(__file__).resolve().parent / "recruit_server.py"
 
+# 写库演示开关：默认 False（只跑只读场景）；改成 True 会额外演示
+# screen_candidate（完整初筛并写入候选人库）+ rank_candidates（看排名）。
+WRITE_DEMO = False
+
+# 演示用虚构简历（与 data/resumes 同为拟真数据）
+SAMPLE_RESUME = (
+    "李明，24岁，大连外国语大学软件工程专业本科，2027届应届。"
+    "熟练 Python，熟悉 LangChain、LangGraph、RAG、Chroma，"
+    "独立做过一个招聘 Agent 项目：Function Calling 工具调用、"
+    "BM25 加向量混合检索、人岗匹配打分。"
+    "目标岗位 AI Agent 开发实习生，期望薪资 8K-12K，电话 13800000099。"
+)
+
+
+async def ask(agent, title: str, question: str):
+    """向 Agent 提一个问题，打印标题与最终回答。"""
+    print(f"\n===== {title} =====")
+    result = await agent.ainvoke({"messages": [{"role": "user", "content": question}]})
+    print(result["messages"][-1].content)
+
 
 async def main():
     # 1. 配置 MCP 连接：用“当前 Python 解释器”启动 Server（stdio）
@@ -39,7 +64,7 @@ async def main():
 
     # 2. 自动启动 Server、握手、拿到工具列表
     tools = await mcp_client.get_tools()
-    print("Agent 发现的工具：", [tool.name for tool in tools])
+    print("Agent 发现的工具：", sorted(tool.name for tool in tools))
 
     # 3. 建模型、建 Agent（挂上 MCP 工具）
     chat_model = ChatOpenAI(
@@ -50,44 +75,45 @@ async def main():
     agent = create_agent(
         chat_model,
         tools,
-        system_prompt="你是招聘助手，始终用简体中文简洁回答。",
+        system_prompt=(
+            "你是招聘助手，始终用简体中文简洁回答；需要事实信息时优先调用工具，"
+            "不要自己编造岗位或候选人信息。"
+        ),
     )
 
-    # 内置示例数据（练习用假数据）
-    resume_text = (
-        "张三，28岁，本科软件工程，工作5年，熟练 Python、FastAPI、MySQL、Redis，"
-        "了解 Docker、Kubernetes，期望20K-25K，大连或远程。"
-    )
-    jd_text = (
-        "Python 后端工程师，大连，18K-25K，本科，3年以上 Python，"
-        "熟练 FastAPI、MySQL、Redis，熟悉 Docker，Kubernetes 优先，"
-        "有大模型/RAG 经验优先。"
+    # 场景1：岗位列表 → list_positions
+    await ask(
+        agent,
+        "场景1：岗位列表（list_positions）",
+        "现在岗位库里一共有哪些岗位？列出编号和岗位名。",
     )
 
-    # 场景1：只分析简历 → 应选 analyze_resume
-    result1 = await agent.ainvoke(
-        {
-            "messages": [
-                {"role": "user", "content": f"帮我分析这份简历：{resume_text}"}
-            ]
-        }
+    # 场景2：知识库混合检索 → search_jd_knowledge
+    await ask(
+        agent,
+        "场景2：知识库混合检索（search_jd_knowledge）",
+        "我想找要求会 RAG、LangChain 或 LangGraph 的岗位，帮我检索一下。",
     )
-    print("\n=== 场景1（分析简历）===")
-    print(result1["messages"][-1].content)
 
-    # 场景2：人岗对照 → 应选 match_resume_jd
-    result2 = await agent.ainvoke(
-        {
-            "messages": [
-                {
-                    "role": "user",
-                    "content": f"看看这个候选人配不配这个岗。\n简历：{resume_text}\nJD：{jd_text}",
-                }
-            ]
-        }
+    # 场景3：简历画像只读分析 → analyze_resume（不落库）
+    await ask(
+        agent,
+        "场景3：简历画像只读分析（analyze_resume）",
+        f"先只分析这份简历、抽出画像，不要写入数据库：\n{SAMPLE_RESUME}",
     )
-    print("\n=== 场景2（人岗对照）===")
-    print(result2["messages"][-1].content)
+
+    # 可选：写库演示（默认关闭）
+    if WRITE_DEMO:
+        await ask(
+            agent,
+            "场景4：完整初筛并落库（screen_candidate）",
+            f"把这份候选人收进系统做初筛并匹配岗位：\n{SAMPLE_RESUME}",
+        )
+        await ask(
+            agent,
+            "场景5：候选人排名（rank_candidates）",
+            "给我看一下现在库里候选人的匹配排名。",
+        )
 
 
 if __name__ == "__main__":
