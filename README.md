@@ -17,6 +17,7 @@
 - **多轮记忆**：同一会话连续提问（如先问薪资、再追问地点），模型记得上文。
 - **人工审批（Human-in-the-loop）**：工具执行前暂停，把“要调的工具 + 参数”交人确认，批准才执行、拒绝则中止。
 - **MCP 工具服务（真实后端）**：8 个标准 MCP 工具直接复用项目真实的存储层与检索层——岗位侧 `list_positions / get_position / search_jd_knowledge`，简历侧 `analyze_resume / match_resume_with_jd`（只读、不写库）、`screen_candidate / rank_candidates / delete_candidate`（写库）；MCP 端与 Gradio、种子脚本共用同一套函数，结果一致。Agent 一次握手发现全部工具、自主选择并提参；换 Agent 不改工具、换工具不改 Agent。
+- **服务化部署（FastAPI + MCP Streamable HTTP）**：`recruit_mcp/http_app.py` 起一个常驻进程，把同一套后端同时暴露成普通 REST（`/api/...`）与标准 MCP（`/mcp`）；传输从 stdio 的"一个客户端拉起一个本地进程"升级为"一个服务、多个客户端通过 URL 共享"，Agent 与工具代码零改动（只改连接配置），另附 Swagger 文档（`/docs`）与健康检查。
 - **多智能体串行双专家**：Supervisor（总指挥）按固定流程依次派单——简历分析专家先产出结构化画像，人岗匹配专家再经 **InjectedState** 自动读取画像（大段数据走共享状态，模型只决定“调谁”、不当搬运工），从向量库检索 Top-K JD 并给出匹配度百分比、匹配点与差距建议；专家结果回流主管后再派下一单，串行顺序由状态机强制保证。与 MCP 版的区别：MCP 版匹配需手动同时提供简历与 JD 原文，本版**只给一份简历即可自动找岗**。网页对话层另把两步封成一个复合工具，避免把流程正确性赌在模型自律上。
 - **多智能体并行编排**：① **静态并行**（`resume_parallel_agents.py`）——一份简历 + 目标 JD，技术栈 / 薪资 / 到岗稳定性三个互不依赖的专家**同时开工**（fan-out），三块结论经 reducer（`Annotated[list, operator.add]`）累加、汇总节点自动等齐（fan-in），总耗时≈最慢的一个专家（实测约 1.4 秒，而非三者相加）；② **Send 动态扇出**（`resume_batch_screen.py`）——N 份简历批量初筛，`dispatch` 返回 `Send` 列表、运行时按简历份数自动复制 N 个专家，改名单不用改图。三者选型：**有依赖走串行、无依赖的多维评估走静态并行、数量不定的批量任务走 Send**。
 - **统一调度主管（Supervisor + subgraph）**：顶层大模型主管用 `with_structured_output` + `Literal` 把人话语义收敛成三个合法车间之一（`serial_all / parallel_all / batch_all`），经条件边派发到对应**已编译子图**；语义判断交模型、确定性流程交图结构（模型只能选路、不能造路），三个真实场景实测全部正确路由（`resume_unified_supervisor.py`）。
@@ -50,6 +51,7 @@
 | 结构化存储 | SQLite（岗位 jds / 候选人 candidates / 匹配 matchings） |
 | 框架 | LangChain 1.4 + LangGraph 1.2 |
 | 工具协议 | MCP（FastMCP）+ langchain-mcp-adapters |
+| HTTP 服务化 | FastAPI + Uvicorn（同一进程提供 REST `/api` 与 MCP Streamable HTTP `/mcp`） |
 | Web 界面 | Gradio 6.x |
 | 语言 | Python 3.11 |
 
@@ -113,9 +115,11 @@ recruit-agent/
 │   ├── web_agent.py          # Gradio 网页版：create_agent + 双工具、工具调用可观测
 │   ├── web_stream_agent.py   # 网页完整版：思考过程直播 + 跨轮记忆 + 简历一键匹配
 │   └── app.py                # StateGraph ReAct 主管 + SqliteSaver 记忆 + interrupt 人工审批
-├── recruit_mcp/              # MCP 工具服务（真实后端能力，可被任意 MCP Agent 复用）
-│   ├── recruit_server.py     # FastMCP Server：8 个工具复用 SQLite/Chroma/混合检索
-│   └── agent_recruit_client.py  # Agent 经 MCP 自主选工具的演示（写库场景默认关闭）
+├── recruit_mcp/              # MCP 工具服务 + HTTP 服务化（同一套真实后端，可被任意 MCP Agent 复用）
+│   ├── recruit_server.py     # FastMCP Server：8 个工具复用 SQLite/Chroma/混合检索（stdio 入口）
+│   ├── agent_recruit_client.py  # Agent 经 MCP 自主选工具的演示（stdio，写库场景默认关闭）
+│   ├── http_app.py           # FastAPI 常驻服务：同一套后端同时暴露 REST(/api) 与 MCP(/mcp)
+│   └── agent_http_client.py  # Agent 经 Streamable HTTP 连常驻服务的演示（只改连接方式）
 └── docs/
     └── 招聘Agent-架构图.html
 ```
@@ -156,10 +160,58 @@ python recruit_graph/resume_unified_supervisor.py  # 毕业作品：主管意图
 python recruit_graph/web_agent.py  # Gradio 网页版：浏览器打开 http://127.0.0.1:7860
 python recruit_graph/web_stream_agent.py  # 网页完整版：思考过程直播 + 跨轮记忆
 python recruit_mcp/agent_recruit_client.py  # MCP：Agent 自主调用 8 个真实后端工具（stdio）
+python recruit_mcp/http_app.py              # 服务化：起常驻 FastAPI，同时提供 REST(/api) 与 MCP(/mcp)
+# 上一条服务启动后，另开一个终端：
+python recruit_mcp/agent_http_client.py     # Agent 经 Streamable HTTP 连 http://127.0.0.1:8000/mcp
 ```
 
 > 需要一份 OpenAI 兼容的 `.env`：聊天模型默认 DeepSeek（`MODEL=deepseek-chat`、`BASE_URL=https://api.deepseek.com`），检索还要用到 BAAI/bge-large-zh 向量模型与 bge-reranker 精排模型。
 > 若所选平台（如 DeepSeek 官方）不提供 bge 向量/精排，可把 `BASE_URL` 指向同时提供这些模型的兼容服务（如硅基流动 SiliconFlow）并相应调整 `MODEL`；聊天、向量、精排三处都读同一份 `.env`，代码不用改。
+
+## 服务化部署：REST + MCP（Streamable HTTP）
+
+`recruit_mcp/http_app.py` 用 FastAPI 把整套招聘后端在一个常驻进程里同时开成两套接口：
+
+- **REST 接口**（`/api/...`）：给浏览器、前端、Postman 等常规 HTTP 客户端用，返回标准 JSON；
+- **MCP 接口**（`/mcp`）：2025 年版 Streamable HTTP 传输，任何 MCP 客户端（本项目 Agent / Claude Desktop / Cursor）连一个 URL 即可握手调用。
+
+启动（仓库根目录）：
+
+```powershell
+python recruit_mcp/http_app.py
+# 或：uvicorn recruit_mcp.http_app:app --host 127.0.0.1 --port 8000
+```
+
+启动后：
+
+- 健康检查：GET http://127.0.0.1:8000/health
+- 自动接口文档（Swagger）：http://127.0.0.1:8000/docs
+- MCP 端点：http://127.0.0.1:8000/mcp
+
+REST 接口一览（与 8 个 MCP 工具共用同一套后端函数）：
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/health` | 健康检查 |
+| GET | `/api/positions` | 岗位列表 |
+| GET | `/api/positions/{jd_id}` | 单份 JD 详情（找不到返回 404） |
+| GET | `/api/search?query=&top_k=` | 岗位知识库混合检索（BM25+向量+RRF+精排） |
+| POST | `/api/analyze-resume` | 简历画像只读分析（不写库） |
+| POST | `/api/match-resume` | 简历与给定 JD 临时对照（不写库） |
+| POST | `/api/screen-candidate` | 完整初筛并写入候选人库 |
+| GET | `/api/candidates?min_score=` | 候选人匹配排名（按匹配分降序） |
+| DELETE | `/api/candidates/{id}` | 删除候选人 |
+
+stdio 与 Streamable HTTP 对比：
+
+| | stdio（recruit_server.py） | Streamable HTTP（http_app.py） |
+| --- | --- | --- |
+| 连接方式 | 给命令，客户端本地拉起一个进程 | 给一个 URL，服务常驻 |
+| 客户端数量 | 一个客户端配一个进程 | 一个服务可被多个网络客户端共享 |
+| 典型场景 | 本地桌面 Agent、Claude Desktop | 服务端部署、远程/多客户端、团队共享 |
+| 业务代码 | 同一套 8 个工具、同一个 Agent | 只改连接配置，工具与 Agent 零改动 |
+
+> 本地默认只监听回环地址 127.0.0.1，且 FastMCP 默认只允许 localhost 访问；部署到服务器时需把 host 改为 `0.0.0.0`、在 FastMCP 配置里放开访问来源（TransportSecurity），并自行加鉴权 / 网关与 CORS，再对公网开放。
 
 ## 数据说明
 
@@ -174,7 +226,7 @@ python recruit_mcp/agent_recruit_client.py  # MCP：Agent 自主调用 8 个真�
 - [x] **结构化数据层**：SQLite（岗位/候选人/匹配）+ Chroma 双写，岗位增删改两边一致；`seed_jds.py` 幂等清空重灌。
 - [x] **真实简历初筛闭环**：8 份拟真简历批量"画像 → 全量 JD 横向匹配打分 → 落库 → 排名"，修复评分区分度与岗位名脏值（`seed_candidates.py`）。
 - [x] **MCP（真实后端）**：8 个标准 MCP 工具直接复用 SQLite + Chroma + 混合检索——岗位查询/检索、简历画像/对照、初筛落库/排名/删除；stdio 即插即用，任意 MCP 客户端一次握手调用同一套后端（`recruit_mcp`）。
-- [ ] **MCP 服务化部署**：将 stdio 升级为 Streamable HTTP（多客户端共享），与 FastAPI、服务器部署一起做。
+- [x] **MCP 服务化部署（Streamable HTTP）**：FastAPI 常驻进程同时暴露 REST（`/api`）与标准 MCP（`/mcp`），把 stdio 的"一个客户端拉起一个进程"升级为"一个服务、多个客户端通过 URL 共享"，Agent 与工具代码零改动；含会话管理器 lifespan 挂载、Swagger 文档，以及 8 个工具（含写库增删闭环）端到端验证（`recruit_mcp/http_app.py`、`agent_http_client.py`）。
 - [x] **Web 界面（Gradio）**：本地网页聊天、后端打印消息类型与工具名、工具路由可观测（`recruit_graph/web_agent.py`）。
 - [x] **思考过程可视化 + 网页记忆**：工具调用折叠块按顺序直播、每步可追溯；checkpointer + thread_id 支撑跨轮记忆（`recruit_graph/web_stream_agent.py`）。
 - [x] **统一主管（Supervisor）路由三种编排**：顶层大模型主管按人话语义三选一，派发到串行 / 静态并行 / Send 三个**已编译 subgraph**（`resume_unified_supervisor.py`）；`Literal` 锁死合法路由、条件边派单，模型只选路不造路，三个真实场景实测全部正确。
