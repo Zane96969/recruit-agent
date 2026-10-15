@@ -45,6 +45,10 @@ chat_model = ChatOpenAI(
     base_url=BASE_URL,
     model=MODEL,
     temperature=0,
+    # 健壮化：单次请求最长等 60 秒，避免网络抽风时无限挂起；
+    # 遇到限流/超时自动重试最多 3 次，把瞬时故障挡在外面。
+    timeout=60,
+    max_retries=3,
 )
 
 structured_model = chat_model.with_structured_output(JobList, method="function_calling")

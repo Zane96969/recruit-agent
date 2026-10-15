@@ -56,7 +56,10 @@ def list_positions() -> list[dict]:
     """列出岗位库中所有在招岗位（编号、岗位名称、录入时间），最新在前。
     当用户想知道“现在有哪些岗位 / 岗位列表”时使用，不返回 JD 全文。
     """
-    return list_jds()
+    try:
+        return list_jds()
+    except Exception as e:  # 兜底：读库失败也返回结构化错误，不让 MCP 调用崩
+        return [{"error": "读取岗位列表失败", "detail": str(e)}]
 
 
 @server.tool()
@@ -65,7 +68,10 @@ def get_position(jd_id: int) -> dict:
     当用户已经指定岗位编号、或要看某个岗位的详细要求时使用。
     :param jd_id: 岗位编号，来自 list_positions 返回的 id
     """
-    jd = get_jd(jd_id)
+    try:
+        jd = get_jd(jd_id)
+    except Exception as e:
+        return {"error": f"读取岗位 {jd_id} 失败", "detail": str(e)}
     if not jd:
         return {"error": f"未找到编号为 {jd_id} 的岗位"}
     return jd
@@ -79,8 +85,13 @@ def search_jd_knowledge(query: str, top_k: int = 3) -> list[dict]:
     :param query: 自然语言问题，如“哪个岗位要求会 RAG 和 LangChain”
     :param top_k: 返回片段数量，默认 3
     """
-    docs = hybrid_search(query, top_k=top_k)
-    return [{"id": doc.metadata.get("id"), "text": doc.page_content} for doc in docs]
+    try:
+        docs = hybrid_search(query, top_k=top_k)
+        return [
+            {"id": doc.metadata.get("id"), "text": doc.page_content} for doc in docs
+        ]
+    except Exception as e:  # BM25/向量/rerank 任一步网络失败，都降级为错误片段
+        return [{"error": "知识库检索失败", "detail": str(e)}]
 
 
 # ===================== 简历分析（只读，不写库） =====================
@@ -91,7 +102,10 @@ def analyze_resume(resume_text: str) -> dict:
     当用户只想“分析这份简历 / 看看画像抽得准不准”，或想先人工确认再入库时使用。
     :param resume_text: 简历原文
     """
-    return analyze_profile(resume_text)
+    try:
+        return analyze_profile(resume_text)
+    except Exception as e:
+        return {"error": "简历分析失败", "detail": str(e)}
 
 
 @server.tool()
@@ -102,14 +116,17 @@ def match_resume_with_jd(resume_text: str, jd_text: str) -> dict:
     :param resume_text: 简历原文
     :param jd_text: 岗位 JD 原文，由用户直接提供，不必在岗位库中
     """
-    profile_json = analyze_resume_worker.invoke({"resume_text": resume_text})
-    match_json = match_resume_by_jd.invoke(
-        {"profile_json": profile_json, "jd_text": jd_text}
-    )
-    return {
-        "profile": json.loads(profile_json),
-        "match": json.loads(match_json),
-    }
+    try:
+        profile_json = analyze_resume_worker.invoke({"resume_text": resume_text})
+        match_json = match_resume_by_jd.invoke(
+            {"profile_json": profile_json, "jd_text": jd_text}
+        )
+        return {
+            "profile": json.loads(profile_json),
+            "match": json.loads(match_json),
+        }
+    except Exception as e:
+        return {"error": "简历与岗位匹配失败", "detail": str(e)}
 
 
 # ===================== 业务闭环（写 SQLite） =====================
@@ -120,7 +137,10 @@ def screen_candidate(resume_text: str) -> dict:
     当用户要“把这个人收进系统初筛 / 入库并匹配岗位”时使用，会写数据库。
     :param resume_text: 简历原文
     """
-    return save_candidate(resume_text)
+    try:
+        return save_candidate(resume_text)
+    except Exception as e:
+        return {"error": "候选人初筛入库失败", "detail": str(e)}
 
 
 @server.tool()
@@ -129,7 +149,10 @@ def rank_candidates(min_score: int = 0) -> list[dict]:
     当用户问“现在库里候选人怎么排 / 哪些人最匹配 / 给我排名”时使用。
     :param min_score: 最低匹配分，默认 0 表示返回全部候选人
     """
-    return list_candidates(min_score=min_score)
+    try:
+        return list_candidates(min_score=min_score)
+    except Exception as e:
+        return [{"error": "读取候选人排名失败", "detail": str(e)}]
 
 
 @server.tool()
@@ -138,8 +161,11 @@ def delete_candidate(candidate_id: int) -> dict:
     当用户明确要求删除某个候选人时使用。
     :param candidate_id: 候选人编号，来自 rank_candidates 返回的 id
     """
-    deleted = delete_candidate_row(candidate_id)
-    return {"candidate_id": candidate_id, "deleted": deleted}
+    try:
+        deleted = delete_candidate_row(candidate_id)
+        return {"candidate_id": candidate_id, "deleted": deleted}
+    except Exception as e:
+        return {"error": f"删除候选人 {candidate_id} 失败", "detail": str(e)}
 
 
 if __name__ == "__main__":

@@ -43,8 +43,17 @@ SAMPLE_RESUME = (
 async def ask(agent, title: str, question: str):
     """向 Agent 提一个问题，打印标题与最终回答。"""
     print(f"\n===== {title} =====")
-    result = await agent.ainvoke({"messages": [{"role": "user", "content": question}]})
-    print(result["messages"][-1].content)
+    try:
+        result = await agent.ainvoke(
+            {"messages": [{"role": "user", "content": question}]},
+            # recursion_limit：模型“思考↔调工具”每来回算一步，
+            # 15 步封顶，防止它卡住后反复调同一个工具把循环跑爆。
+            config={"recursion_limit": 15},
+        )
+        print(result["messages"][-1].content)
+    except Exception as e:
+        # 循环超限 / 模型报错 / 网络抖动都在这里兜住，不让整个演示崩掉
+        print(f"[Agent 执行异常] {type(e).__name__}: {e}")
 
 
 async def main():
@@ -63,6 +72,8 @@ async def main():
         api_key=os.getenv("API_KEY"),
         base_url=os.getenv("BASE_URL"),
         model=os.getenv("MODEL"),
+        timeout=60,
+        max_retries=3,
     )
     agent = create_agent(
         chat_model,
