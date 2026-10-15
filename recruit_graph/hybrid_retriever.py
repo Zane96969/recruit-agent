@@ -89,13 +89,18 @@ def rerank_candidates(query: str, candidates, top_k: int = 3):
 
 
 def hybrid_search(query: str, candidate_n: int = 8, top_k: int = 3):
-    """混合检索总入口：BM25+向量 RRF 粗排 → bge-reranker 精排，
+    """混合检索总入口：BM25+向量 RRF 粗排 → bge-reranker 精排。
     返回 LangChain Document 列表（与 retriever.invoke 同类型）。"""
     # 第一组：粗排，多捞一些候选（candidate_n 个）
     candidates = hybrid_retrieve(query, top_n=candidate_n)
 
-    # 第二组：精排，压到 top_k 个
-    ranked = rerank_candidates(query, candidates, top_k=top_k)
+    # 第二组：精排压到 top_k。rerank 只是“增强”不是“刚需”，
+    # 它挂了就自动降级：直接用粗排（RRF）前 top_k 条，检索整体不挂。
+    try:
+        ranked = rerank_candidates(query, candidates, top_k=top_k)
+    except Exception as e:  # noqa: BLE001
+        print(f"[降级] rerank 精排失败（{type(e).__name__}），退回 BM25+向量粗排结果")
+        ranked = candidates[:top_k]
 
     # 第三组：把每个 (块id, 文本) 包成 Document 盒子，返回类型和 retriever.invoke 一致
     return [Document(page_content=text, metadata={"id": cid}) for cid, text in ranked]
