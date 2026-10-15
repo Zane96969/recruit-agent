@@ -112,11 +112,23 @@ class MatchResult(BaseModel):
 
 match_system = SystemMessage(
     content=(
-        "你是人岗匹配专家。你会收到候选人画像 JSON 和从岗位库检索到的若干份 JD。"
-        "请完成：1）从检索到的 JD 中选出与画像最匹配的 1 个岗位；"
-        "2）给出匹配度百分比（0-100%）；3）列出关键匹配点（技能、学历、方向等）；"
-        "4）列出差距点（如期望薪资与岗位薪资范围不符、经验或技能缺口）；"
-        "5）给出一句求职/招聘建议。"
+        "你是人岗匹配专家。你会收到候选人画像 JSON 和岗位库中的全部 JD，"
+        "每份 JD 用 --- 分隔，第一行“职位名称：”后面就是该岗位的完整名称。"
+        "请从这些 JD 中选出与画像最匹配的 1 个岗位，并对照岗位要求打分。评分锚点："
+        "90-100：满足全部硬性要求，且具备 JD 中“优先/熟悉”的核心方向实战经验"
+        "（如 RAG/LangChain/LangGraph、微服务/JVM 调优、完整猎头寻访流程），可直接推荐；"
+        "75-84：满足硬性要求，但“优先”项里的关键能力只停留在课程或了解层面，缺少对应项目经验；"
+        "60-74：方向沾边、会基础工具，但缺多项核心技能；"
+        "40-59：仅学历或通用技能等个别条件沾边，没有对口方向的项目或实习；"
+        "0-39：完全不对口，或与库中所有岗位都无关。"
+        "硬性规则：1）只会基础语言（如 Python、Java）但缺少该岗位“优先”项的核心实战经验时，分数不得超过 80；"
+        "2）对于“专业不限/学历门槛低”的岗位，也要看是否有对口实习或经历（招聘、销售、寻访、沟通等），"
+        "完全没有相关经历的，分数不得超过 55；"
+        "3）matched_job 必须逐字复制所选 JD 第一行“职位名称：”后的完整岗位名，"
+        "禁止填写“JD1”“第一个岗位”等代号，也禁止填候选人自己的求职意向；"
+        "4）若候选人与所有 JD 都不对口，matched_job 填“无”，分数给 0-39；"
+        "5）不同候选人要严格横向比较、拉开差距，不要都给同一个分；"
+        "6）report 写关键匹配点、差距点、一句建议。"
         "只允许依据画像和 JD 内容作答，禁止编造 JD 里不存在的信息。"
     )
 )
@@ -164,11 +176,17 @@ def match_jd_worker(state: Annotated[list, InjectedState("messages")]) -> str:
 
 @tool
 def match_resume_worker(profile_json: str) -> str:
-    """人岗匹配打分专家：输入候选人画像 JSON，检索最相关 JD，
-    返回结构化匹配结果（岗位、整数分数、理由）的 JSON。
+    """人岗匹配打分专家：输入候选人画像 JSON，读取岗位库全部 JD 完整原文，
+    横向比较后选出最匹配的 1 个岗位，返回结构化结果（岗位、整数分数、理由）的 JSON。
+    岗位数量很少时，用完整 JD 全量比对（而非检索碎片），保证岗位名准确、分数有区分度。
     """
-    jd_docs = hybrid_search(profile_json)
-    jd_text = "\n---\n".join(doc.page_content for doc in jd_docs)
+    from recruit_graph.jd_store import get_jd, list_jds
+
+    # 岗位只有个位数，直接读全部完整 JD，按 id 升序拼接
+    jd_texts = []
+    for jd in sorted(list_jds(), key=lambda item: item["id"]):
+        jd_texts.append(get_jd(jd["id"])["jd_text"])
+    jd_text = "\n---\n".join(jd_texts)
     match_model = chat_model.with_structured_output(
         MatchResult,
         method="function_calling",
@@ -177,7 +195,7 @@ def match_resume_worker(profile_json: str) -> str:
         [
             match_system,
             HumanMessage(
-                content=f"【候选人画像】\n{profile_json}\n\n【相关岗位 JD】\n{jd_text}"
+                content=f"【候选人画像】\n{profile_json}\n\n【岗位库全部 JD】\n{jd_text}"
             ),
         ]
     )
