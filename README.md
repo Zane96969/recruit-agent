@@ -6,6 +6,7 @@
 > 新增 **LangGraph 多智能体（resume_multi_agent）**：Supervisor 编排"简历分析专家 → 人岗匹配专家"串行接力，只给一份简历就自动从岗位库检索 JD、给出匹配度报告。
 > 再增 **多智能体并行（resume_parallel_agents / resume_batch_screen）**：技术栈 / 薪资 / 稳定性三个**互不依赖**的专家静态并行（fan-out/fan-in）同时评估一份简历；并用 **Send 动态扇出**对 N 份简历批量初筛、自动复制 N 个专家。串行 / 静态并行 / 动态扇出按任务依赖关系选型。
 > 收官 **统一调度主管（resume_unified_supervisor）**：一个大模型 Supervisor 读人话语义做三选一，把任务派给三个已编译的 **subgraph（子图）**——串行画像自动找岗 / 三专家静态并行 / Send 批量初筛；模型只负责"选路"，车间内部的确定性流程由图结构在编译期锁死。
+> 最后以 **Gradio 三模块统一工作台（web_workbench.py）** 收口：把"岗位管理（上传/新增/改/删）、简历逐份初筛累积排名、知识库问答、JD 智能生成"整合成一个网页，支持上传 PDF / Word / 图片（OCR）真实文件。
 
 ## 功能特性
 
@@ -24,6 +25,10 @@
 - **多智能体串行双专家**：Supervisor（总指挥）按固定流程依次派单——简历分析专家先产出结构化画像，人岗匹配专家再经 **InjectedState** 自动读取画像（大段数据走共享状态，模型只决定“调谁”、不当搬运工），从向量库检索 Top-K JD 并给出匹配度百分比、匹配点与差距建议；专家结果回流主管后再派下一单，串行顺序由状态机强制保证。与 MCP 版的区别：MCP 版匹配需手动同时提供简历与 JD 原文，本版**只给一份简历即可自动找岗**。网页对话层另把两步封成一个复合工具，避免把流程正确性赌在模型自律上。
 - **多智能体并行编排**：① **静态并行**（`resume_parallel_agents.py`）——一份简历 + 目标 JD，技术栈 / 薪资 / 到岗稳定性三个互不依赖的专家**同时开工**（fan-out），三块结论经 reducer（`Annotated[list, operator.add]`）累加、汇总节点自动等齐（fan-in），总耗时≈最慢的一个专家（实测约 1.4 秒，而非三者相加）；② **Send 动态扇出**（`resume_batch_screen.py`）——N 份简历批量初筛，`dispatch` 返回 `Send` 列表、运行时按简历份数自动复制 N 个专家，改名单不用改图。三者选型：**有依赖走串行、无依赖的多维评估走静态并行、数量不定的批量任务走 Send**。
 - **统一调度主管（Supervisor + subgraph）**：顶层大模型主管用 `with_structured_output` + `Literal` 把人话语义收敛成三个合法车间之一（`serial_all / parallel_all / batch_all`），经条件边派发到对应**已编译子图**；语义判断交模型、确定性流程交图结构（模型只能选路、不能造路），三个真实场景实测全部正确路由（`resume_unified_supervisor.py`）。
+- **统一工作台（Gradio 三模块，`web_workbench.py`）**：一个入口整合"岗位管理 / 简历逐份初筛 / 知识库问答与 JD 生成"——岗位可粘贴文本或上传文件新建、按 id 改名/补充/删除；简历**逐份上传、逐份解析匹配并累积到同一份候选人排名**（不互相覆盖），可反复查看与删除。
+- **文档解析（PDF / Word / 图片 OCR，`recruit_graph/doc_parser.py`）**：统一把 PDF（PyMuPDF 读文字层，文字极少的扫描页自动转图片交视觉模型 OCR）、Word（python-docx 读正文段落与表格）、图片（Qwen-VL 视觉模型原样转录）、txt/md 提取成纯文本；旧版 .doc 提示先另存为 .docx。
+- **JD 智能生成（few-shot RAG + 客户要求，`recruit_graph/jd_generator.py`）**：先用混合检索从知识库捞出同类真实 JD 作范例（只借结构、不抄内容），再经 Function Calling 输出结构化草稿（学历/年限/地点/薪资/招聘人数/职责/要求）；**客户明确给的要求（薪资、地点、学历、年限、招聘人数、硬性技能、汇报对象）作为最高优先级事实写入，客户没给且无法按惯例推断的才标"待确认"**，从源头避免凭空编造。
+- **岗位管理与脏数据防护**：岗位支持按 id 更新——只改名时原地改向量块 metadata、不重新向量化；改正文时删旧向量再重建，若与其他岗位撞重则提前拦截。简历识别不到姓名时统一落"未知姓名"，姓名正则只认"姓名："这类明确标签并排除"个人简历/求职意向"等板块标题，防止把标题误当人名。
 - **网页界面（Gradio）**：一条命令在浏览器里聊天，工具路由过程清晰可观测。
 - **思考过程可视化**：网页端把“调用工具 → 工具返回 → 最终答案”渲染成可折叠块、按执行顺序实时直播，每一步可点开追溯。
 - **网页跨轮记忆**：checkpointer + thread_id 让网页版记得上文（先问薪资、再追问“它在哪工作”能正确指代），且不重复调用已有结果的工具。
@@ -56,6 +61,7 @@
 | 工具协议 | MCP（FastMCP）+ langchain-mcp-adapters |
 | HTTP 服务化 | FastAPI + Uvicorn（同一进程提供 REST `/api` 与 MCP Streamable HTTP `/mcp`） |
 | Web 界面 | Gradio 6.x |
+| 文档解析 | PyMuPDF（PDF 文字层）+ python-docx（Word）+ 视觉模型 Qwen-VL（图片/扫描件 OCR） |
 | 语言 | Python 3.11 |
 
 ## 三版实现对照
@@ -95,6 +101,7 @@ recruit-agent/
 ├── seed_jds.py               # 岗位种子灌库：清空后全量 JD 双写（SQLite + Chroma，幂等）
 ├── seed_candidates.py        # 简历种子灌库：批量画像→匹配→落库→排名
 ├── web_ranking.py            # Gradio 候选人匹配排名页
+├── web_workbench.py          # 统一工作台：岗位管理 + 简历逐份初筛累积 + 知识库问答/JD 生成
 ├── data/                     # 拟真数据（虚构，不对应真实公司）
 │   ├── jd_ai_agent.txt
 │   ├── jd_java.txt
@@ -109,7 +116,9 @@ recruit-agent/
 │   ├── graph_tools.py        # 招聘工具：JD 画像 + 简历分析/人岗匹配（含 InjectedState、全量 JD 评分）
 │   ├── jd_store.py           # SQLite 岗位层：jds/matchings 增删查 + 触发向量双写
 │   ├── candidate_store.py    # SQLite 候选人层：save_candidate 初筛落库 / list_candidates 排名
-│   ├── jd_vector_store.py    # Chroma 向量层：切块、embedding、岗位向量增删
+│   ├── jd_vector_store.py    # Chroma 向量层：切块、embedding、岗位向量增删改
+│   ├── doc_parser.py         # 文档解析：PDF/Word 文字层 + 图片视觉 OCR + 文本 → 纯文本
+│   ├── jd_generator.py       # JD 智能生成：few-shot 检索同类范例 + 客户要求优先 + 结构化输出
 │   ├── hybrid_retriever.py   # 混合检索：BM25 + 向量 + RRF + rerank（总入口 hybrid_search）
 │   ├── resume_multi_agent.py # 多智能体：Supervisor 串行双专家（简历分析 → RAG 人岗匹配）
 │   ├── resume_parallel_agents.py # 多智能体：静态并行三专家（技术/薪资/稳定性 fan-out/fan-in）
@@ -163,6 +172,7 @@ python recruit_graph/resume_batch_screen.py     # 多智能体：Send 动态扇�
 python recruit_graph/resume_unified_supervisor.py  # 毕业作品：主管意图路由 + 三子图统一调度（三场景实测）
 python recruit_graph/web_agent.py  # Gradio 网页版：浏览器打开 http://127.0.0.1:7860
 python recruit_graph/web_stream_agent.py  # 网页完整版：思考过程直播 + 跨轮记忆
+python web_workbench.py          # 统一工作台：三模块网页（岗位管理/简历初筛/问答与JD生成），打开 http://127.0.0.1:7860
 python recruit_mcp/agent_recruit_client.py  # MCP：Agent 自主调用 8 个真实后端工具（stdio）
 python recruit_mcp/http_app.py              # 服务化：起常驻 FastAPI，同时提供 REST(/api) 与 MCP(/mcp)
 # 上一条服务启动后，另开一个终端：
@@ -277,6 +287,8 @@ handler.print_summary()
 
 `data/` 下为**拟真示例 JD**，由作者编写、不对应任何真实公司，可自由用于演示。接入真实 JD 时请先脱敏（公司名、联系人、保密薪资）。
 
+统一工作台支持上传 PDF / Word / 图片 / txt 的真实 JD 与简历（图片走视觉模型 OCR）。真实数据只写本地 SQLite（`*.db` 已 gitignore）与本地向量库（`chroma_db/` 已 gitignore），密钥在 `.env`（已 gitignore），均不会进入仓库。
+
 ## 路线图（Roadmap）
 
 - [x] **LangGraph**：StateGraph 状态机、循环/分支、checkpoint 持久化（Sqlite）；多智能体 Supervisor 串行编排——简历分析 → 人岗匹配双专家，InjectedState 自动传递画像、RAG 自动检索岗位（`recruit_graph/resume_multi_agent.py`）。
@@ -293,6 +305,7 @@ handler.print_summary()
 - [x] **五层容错与健壮性**：LLM 超时重试、工具结构化 error、串联短路 + 退避重试、编排层停手、rerank 降级，避免脏数据与级联失败（`recruit_mcp/recruit_server.py`、`recruit_graph/candidate_store.py`、`hybrid_retriever.py`）。
 - [x] **精排/粗排开关**：`hybrid_search(..., use_rerank=)` 一路透传到 LangGraph 工具 / MCP / REST，在最准（精排）与最快（粗排）间切换。
 - [x] **可观测（Observability）**：基于 LangChain `AsyncCallbackHandler` 记录每轮 LLM/工具调用、token、耗时与成败，控制台实时日志 + JSONL 落盘，可平滑替换为 Langfuse（`recruit_mcp/observability.py`）。
+- [x] **统一工作台 + 文档解析 + JD 生成**：Gradio 三模块工作台（岗位管理、简历逐份初筛累积、知识库问答与 JD 生成）；PDF/Word/图片 OCR 解析（`doc_parser.py`）；JD 生成器 few-shot RAG 检索同类范例 + 客户要求优先 + Function Calling 结构化输出；岗位按 id 更新与简历姓名防脏（`web_workbench.py`、`jd_generator.py`、`jd_store.py`）。
 - [ ] **部署上线**：真实数据、服务器部署、公网可访问。
 - [ ] **能力 B（对标分析）**：一批同类 JD 反推合理技术栈与薪资行情；高级版用 Deep Agents 做"招聘行业深度研究 Agent"。
 

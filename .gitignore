@@ -33,3 +33,16 @@ _check_db*.py
 
 # ===== 真实脱敏简历（隐私，仅本地，不进公开仓库；虚构样本 data/resumes 可入库）=====
 data/resumes_real/
+
+# ===== 根目录本地调试/临时产物（_test/_fix/_reset/_preview/_jd/_ocr 等，不入库，仅保留本地）=====
+/_*.py
+/_*.txt
+/_*.png
+/_*.jpg
+/_*.jpeg
+
+# ===== Gradio 运行缓存 =====
+.gradio/
+
+# ===== 用户端走查笔记（本地，含真实使用记录，不入库）=====
+用户端走查问题清单.md

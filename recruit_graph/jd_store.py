@@ -4,7 +4,11 @@ import hashlib
 import sqlite3
 from datetime import datetime
 from pathlib import Path
-from recruit_graph.jd_vector_store import upsert_jd, delete_jd_vectors
+from recruit_graph.jd_vector_store import (
+    upsert_jd,
+    delete_jd_vectors,
+    rename_jd_vectors,
+)
 
 DB_PATH = Path(__file__).resolve().parent / "recruit_real.db"
 
@@ -73,13 +77,59 @@ def save_jd(jd_name: str, jd_text: str) -> dict:
     return {"jd_name": jd_name, "content_hash": content_hash, "jd_id": jd_id}
 
 
+def update_jd(jd_id: int, jd_name: str, jd_text: str) -> dict:
+    """按 id 更新已有岗位（改名 / 补充内容），保留原 id 与创建时间。
+
+    - 正文没变、只改名：只更新 SQLite 名字与向量块 metadata，不重新向量化（快）。
+    - 正文有改动：更新原文后删除旧向量块、按新文本切块重建；
+      若新原文与别的岗位完全相同（会撞唯一约束），提前返回 error 不改任何东西。
+    """
+    content_hash = hashlib.md5(jd_text.strip().encode("utf-8")).hexdigest()
+    conn = _connect()
+    try:
+        conn.execute(_CREATE_JD_TABLE)
+        row = conn.execute(
+            "SELECT content_hash FROM jds WHERE id = ?", (jd_id,)
+        ).fetchone()
+        if not row:
+            return {"error": f"岗位 #{jd_id} 不存在，无法更新"}
+        content_changed = row["content_hash"] != content_hash
+        if content_changed:
+            # 新内容若与“别的”岗位完全相同，会撞 content_hash 唯一约束，提前拦下
+            dup = conn.execute(
+                "SELECT id FROM jds WHERE content_hash = ? AND id != ?",
+                (content_hash, jd_id),
+            ).fetchone()
+            if dup:
+                return {
+                    "error": f"修改后的内容与另一个岗位 #{dup['id']} 完全相同，已取消"
+                }
+            conn.execute(
+                "UPDATE jds SET jd_name = ?, jd_text = ?, content_hash = ? WHERE id = ?",
+                (jd_name, jd_text, content_hash, jd_id),
+            )
+        else:
+            conn.execute("UPDATE jds SET jd_name = ? WHERE id = ?", (jd_name, jd_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+    if content_changed:
+        delete_jd_vectors(jd_id)
+        upsert_jd(jd_id, jd_name, jd_text)
+    else:
+        rename_jd_vectors(jd_id, jd_name)
+    return {"jd_id": jd_id, "jd_name": jd_name, "content_hash": content_hash}
+
+
 def list_jds() -> list[dict]:
-    """返回所有已存 JD：id + 岗位名 + 保存时间，最新在前。"""
+    """返回所有已存 JD：id + 岗位名 + 正文字数 + 保存时间，最新在前。"""
     conn = _connect()
     try:
         conn.execute(_CREATE_JD_TABLE)
         rows = conn.execute(
-            "SELECT id, jd_name, created_at FROM jds ORDER BY id DESC"
+            "SELECT id, jd_name, length(jd_text) AS jd_len, created_at "
+            "FROM jds ORDER BY id DESC"
         ).fetchall()
         return [dict(row) for row in rows]
     finally:

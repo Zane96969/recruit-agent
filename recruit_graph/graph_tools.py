@@ -77,7 +77,8 @@ class ResumeProfile(BaseModel):
     """从简历中抽取的候选人画像（简历分析专家的结构化产物）。"""
 
     name: str = Field(
-        description="候选人的真实中文姓名，例如张三；禁止填写英文、类名或 ResumeProfile 字样"
+        description="候选人的真实中文姓名（2-4个汉字），只能从简历原文逐字提取；"
+        "简历确实没有姓名时填“未知”，禁止填写示例、英文名、类名或任何编造的名字"
     )
     age: str = Field(description="年龄，简历没写填未知")
     education: str = Field(description="最高学历与专业，简历没写填未知")
@@ -100,10 +101,32 @@ resume_system = SystemMessage(
         "项目或作品经历一律放到 projects，不要放进 skills；"
         "简历没写项目时 projects 返回空列表。"
         "简历没写的字段填“未知”，禁止编造。"
-        "姓名字段必须填候选人的真实中文姓名（如张三），"
-        "禁止填写任何英文、类名或 ResumeProfile 字样。"
+        "姓名字段只能从简历原文里逐字提取候选人的真实中文姓名，"
+        "简历确实没有姓名时填“未知”，绝不允许照抄示例、自行编造，"
+        "也禁止填写英文、类名、ResumeProfile 等字样。"
     )
 )
+
+# 常见简历板块/标题词，不是人名，用正则抓姓名时要排除
+_NON_NAME_WORDS = {
+    "个人简历",
+    "求职意向",
+    "基本信息",
+    "联系方式",
+    "教育背景",
+    "教育经历",
+    "工作经历",
+    "工作经验",
+    "项目经历",
+    "项目经验",
+    "技能特长",
+    "技能专长",
+    "专业技能",
+    "自我评价",
+    "校园经历",
+    "实习经历",
+    "岗位匹配",
+}
 
 
 class MatchResult(BaseModel):
@@ -149,10 +172,17 @@ def analyze_resume_worker(resume_text: str) -> str:
         ResumeProfile, method="function_calling"
     )
     profile = resume_model.invoke([resume_system, HumanMessage(content=resume_text)])
-    # 兜底1：模型没抽到姓名时，用正则从简历原文里抓中文名（如“张三，23岁”→张三）
-    if profile.name.strip().lower() in {"resumeprofile", "resume_profile", "", "未知"}:
-        match = re.search(r"[\u4e00-\u9fa5]{2,4}", resume_text)
-        profile.name = match.group() if match else "未知"
+    # 兜底：模型没抽到姓名时，只认“姓名：XXX”这类明确标签，
+    # 避免把“个人简历/求职意向”等板块标题误当姓名；抓不到就留“未知”。
+    bad_names = {"resumeprofile", "resume_profile", "", "未知"}
+    if profile.name.strip().lower() in bad_names:
+        found = re.search(
+            r"(?:姓名|名字)\s*[:：]?\s*([\u4e00-\u9fa5]{2,4})", resume_text
+        )
+        if found and found.group(1) not in _NON_NAME_WORDS:
+            profile.name = found.group(1)
+        else:
+            profile.name = "未知"
     return profile.model_dump_json(ensure_ascii=False)
 
 

@@ -158,6 +158,13 @@ def save_candidate_from_profile(profile: dict, resume_text: str) -> dict:
     content_hash = hashlib.md5(resume_text.strip().encode("utf-8")).hexdigest()
     phone = profile["phone"] if profile["phone"] != "未知" else None
 
+    # 姓名兜底：识别不到时统一成“未知姓名”，绝不让模型示例名（如张三）或
+    # 板块标题混进库里；真实姓名以用户在界面对 JSON 的核对为准。
+    name = (profile.get("name") or "").strip()
+    if name.lower() in {"", "未知", "resumeprofile", "resume_profile", "none", "null"}:
+        name = "未知姓名"
+    profile["name"] = name
+
     match_result = json.loads(
         match_resume_worker.invoke(
             {"profile_json": json.dumps(profile, ensure_ascii=False)}

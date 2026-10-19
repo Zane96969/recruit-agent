@@ -42,3 +42,13 @@ def upsert_jd(jd_id: int, jd_name: str, jd_text: str) -> int:
 def delete_jd_vectors(jd_id: int) -> None:
     """按 jd_id 删掉一份 JD 的所有向量块。"""
     vectorstore._collection.delete(where={"jd_id": jd_id})
+
+
+def rename_jd_vectors(jd_id: int, jd_name: str) -> None:
+    """只改岗位名（正文未变）：原地更新各块 metadata 的 jd_name，不重新向量化。"""
+    data = vectorstore._collection.get(where={"jd_id": jd_id})
+    ids = data.get("ids") or []
+    if not ids:
+        return
+    metadatas = [{"jd_id": jd_id, "jd_name": jd_name} for _ in ids]
+    vectorstore._collection.update(ids=ids, metadatas=metadatas)
