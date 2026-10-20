@@ -28,6 +28,7 @@ from recruit_graph.candidate_store import (
     list_candidates,
     save_candidate_from_profile,
 )
+from recruit_graph.deep_research import run_deep_research
 from recruit_graph.doc_parser import extract_text
 from recruit_graph.graph_tools import chat_model
 from recruit_graph.hybrid_retriever import hybrid_search
@@ -437,6 +438,20 @@ def qa_ask(question: str, mode: str) -> str:
     return answer
 
 
+def deep_research_ask(question: str):
+    """深度研究：多智能体（主管规划 → 两个研究员并行检索 → 综合报告）。
+
+    返回 (报告, 过程轨迹)，界面分别填进两个框。
+    """
+    if not (question or "").strip():
+        return "请输入要研究的岗位或主题。", ""
+    result = run_deep_research(question)
+    report = result["report"]
+    if result["files"]:
+        report += "\n\n— 研究员共享文件：" + "、".join(result["files"])
+    return report, result["trace"]
+
+
 # ===================== 界面 =====================
 CUSTOM_CSS = """
 .gradio-container {max-width: 1240px !important;}
@@ -712,6 +727,21 @@ with gr.Blocks(title="招聘智能体工作台") as demo:
                 q_btn = gr.Button("提问", variant="primary")
             q_ans = gr.Textbox(label="回答", lines=12)
 
+    with gr.Tab("深度研究"):
+        with gr.Column(elem_classes="card"):
+            gr.Markdown(
+                "#### 多智能体深度研究（主管规划 → 两研究员并行检索 → 综合报告）",
+                elem_classes="section-title",
+            )
+            d_box = gr.Textbox(
+                label="要研究的岗位 / 主题",
+                lines=2,
+                placeholder="例如：AI Agent 开发实习需要会什么？",
+            )
+            d_btn = gr.Button("开始深度研究", variant="primary")
+            d_report = gr.Textbox(label="最终报告（带来源引用）", lines=16)
+            d_trace = gr.Textbox(label="过程轨迹（主管规划 / 派活 / 回报）", lines=10)
+
     # 事件绑定 —— 岗位
     jd_extract_btn.click(
         jd_extract,
@@ -779,6 +809,9 @@ with gr.Blocks(title="招聘智能体工作台") as demo:
 
     # 事件绑定 —— 问答
     q_btn.click(qa_ask, inputs=[q_box, q_rank], outputs=q_ans)
+
+    # 事件绑定 —— 深度研究
+    d_btn.click(deep_research_ask, inputs=d_box, outputs=[d_report, d_trace])
 
     # 页面每次打开 / 刷新，都从库实时拉取最新岗位与候选人，避免显示旧快照
     demo.load(refresh_all, outputs=[jd_dropdown, jd_table, r_dropdown, r_count, r_rank])

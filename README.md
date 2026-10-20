@@ -6,7 +6,8 @@
 > 新增 **LangGraph 多智能体（resume_multi_agent）**：Supervisor 编排"简历分析专家 → 人岗匹配专家"串行接力，只给一份简历就自动从岗位库检索 JD、给出匹配度报告。
 > 再增 **多智能体并行（resume_parallel_agents / resume_batch_screen）**：技术栈 / 薪资 / 稳定性三个**互不依赖**的专家静态并行（fan-out/fan-in）同时评估一份简历；并用 **Send 动态扇出**对 N 份简历批量初筛、自动复制 N 个专家。串行 / 静态并行 / 动态扇出按任务依赖关系选型。
 > 收官 **统一调度主管（resume_unified_supervisor）**：一个大模型 Supervisor 读人话语义做三选一，把任务派给三个已编译的 **subgraph（子图）**——串行画像自动找岗 / 三专家静态并行 / Send 批量初筛；模型只负责"选路"，车间内部的确定性流程由图结构在编译期锁死。
-> 最后以 **Gradio 三模块统一工作台（web_workbench.py）** 收口：把"岗位管理（上传/新增/改/删）、简历逐份初筛累积排名、知识库问答、JD 智能生成"整合成一个网页，支持上传 PDF / Word / 图片（OCR）真实文件。
+> 最后以 **Gradio 四模块统一工作台（web_workbench.py）** 收口：把“岗位管理（上传/新增/改/删）、简历逐份初筛累积排名、知识库问答、JD 智能生成、深度研究”整合成一个网页，支持上传 PDF / Word / 图片（OCR）真实文件。
+> 深度研究用 **Deep Agents 多智能体（recruit_graph/deep_research.py）** 再上一层：一个**研究主管**先用 write_todos 把问题拆成子任务、并行 task 派给**技能研究员 / 任职要求研究员**两个子智能体（SubAgent，从属智能体）；它们各自检索本地 JD、把结论写进共享虚拟文件，主管再 read_file 读回、综合成一份每条带来源块 id 的报告。与“知识库问答”（单 Agent 单轮、快但浅）形成高低搭配：深度研究慢但深、可并行、还能看到完整规划-派活过程。
 
 ## 功能特性
 
@@ -25,9 +26,10 @@
 - **多智能体串行双专家**：Supervisor（总指挥）按固定流程依次派单——简历分析专家先产出结构化画像，人岗匹配专家再经 **InjectedState** 自动读取画像（大段数据走共享状态，模型只决定“调谁”、不当搬运工），从向量库检索 Top-K JD 并给出匹配度百分比、匹配点与差距建议；专家结果回流主管后再派下一单，串行顺序由状态机强制保证。与 MCP 版的区别：MCP 版匹配需手动同时提供简历与 JD 原文，本版**只给一份简历即可自动找岗**。网页对话层另把两步封成一个复合工具，避免把流程正确性赌在模型自律上。
 - **多智能体并行编排**：① **静态并行**（`resume_parallel_agents.py`）——一份简历 + 目标 JD，技术栈 / 薪资 / 到岗稳定性三个互不依赖的专家**同时开工**（fan-out），三块结论经 reducer（`Annotated[list, operator.add]`）累加、汇总节点自动等齐（fan-in），总耗时≈最慢的一个专家（实测约 1.4 秒，而非三者相加）；② **Send 动态扇出**（`resume_batch_screen.py`）——N 份简历批量初筛，`dispatch` 返回 `Send` 列表、运行时按简历份数自动复制 N 个专家，改名单不用改图。三者选型：**有依赖走串行、无依赖的多维评估走静态并行、数量不定的批量任务走 Send**。
 - **统一调度主管（Supervisor + subgraph）**：顶层大模型主管用 `with_structured_output` + `Literal` 把人话语义收敛成三个合法车间之一（`serial_all / parallel_all / batch_all`），经条件边派发到对应**已编译子图**；语义判断交模型、确定性流程交图结构（模型只能选路、不能造路），三个真实场景实测全部正确路由（`resume_unified_supervisor.py`）。
-- **统一工作台（Gradio 三模块，`web_workbench.py`）**：一个入口整合"岗位管理 / 简历逐份初筛 / 知识库问答与 JD 生成"——岗位可粘贴文本或上传文件新建、按 id 改名/补充/删除；简历**逐份上传、逐份解析匹配并累积到同一份候选人排名**（不互相覆盖），可反复查看与删除。
+- **统一工作台（Gradio 四模块，`web_workbench.py`）**：一个入口整合"岗位管理 / 简历逐份初筛 / 知识库问答与 JD 生成"——岗位可粘贴文本或上传文件新建、按 id 改名/补充/删除；简历**逐份上传、逐份解析匹配并累积到同一份候选人排名**（不互相覆盖），可反复查看与删除。
 - **文档解析（PDF / Word / 图片 OCR，`recruit_graph/doc_parser.py`）**：统一把 PDF（PyMuPDF 读文字层，文字极少的扫描页自动转图片交视觉模型 OCR）、Word（python-docx 读正文段落与表格）、图片（Qwen-VL 视觉模型原样转录）、txt/md 提取成纯文本；旧版 .doc 提示先另存为 .docx。
 - **JD 智能生成（few-shot RAG + 客户要求，`recruit_graph/jd_generator.py`）**：先用混合检索从知识库捞出同类真实 JD 作范例（只借结构、不抄内容），再经 Function Calling 输出结构化草稿（学历/年限/地点/薪资/招聘人数/职责/要求）；**客户明确给的要求（薪资、地点、学历、年限、招聘人数、硬性技能、汇报对象）作为最高优先级事实写入，客户没给且无法按惯例推断的才标"待确认"**，从源头避免凭空编造。
+- **Deep Agents 深度研究（主管规划 + 多子智能体并行 + 共享文件，`recruit_graph/deep_research.py`）**：研究主管 `write_todos` 列子任务 → 并行 `task` 派给两个 SubAgent（技能研究员、任职要求研究员）→ 研究员各自调**项目自有的混合检索**查真实 JD、`write_file` 写进固定共享文件（`/workdir/skill.md`、`/workdir/requirement.md`）并在回报里贴全文 → 主管 `read_file` 读回，综合成**每条带来源块 id** 的报告；入口 `run_deep_research()` 一次返回「报告 / 过程轨迹 / 共享文件清单」。模型与检索完全复用 `chat_model`、`hybrid_search`，只新增编排层。针对 14B 小模型对“口头指定文件路径”指令遵从弱的问题做双保险：路径写死进每个研究员自己的 system_prompt（固定角色纪律比临时派活更可靠），并约定主管读不到文件就直接用回报结论、不重复派活。
 - **岗位管理与脏数据防护**：岗位支持按 id 更新——只改名时原地改向量块 metadata、不重新向量化；改正文时删旧向量再重建，若与其他岗位撞重则提前拦截。简历识别不到姓名时统一落"未知姓名"，姓名正则只认"姓名："这类明确标签并排除"个人简历/求职意向"等板块标题，防止把标题误当人名。
 - **网页界面（Gradio）**：一条命令在浏览器里聊天，工具路由过程清晰可观测。
 - **思考过程可视化**：网页端把“调用工具 → 工具返回 → 最终答案”渲染成可折叠块、按执行顺序实时直播，每一步可点开追溯。
@@ -58,6 +60,7 @@
 | 向量数据库 | Chroma |
 | 结构化存储 | SQLite（岗位 jds / 候选人 candidates / 匹配 matchings） |
 | 框架 | LangChain 1.4 + LangGraph 1.2 |
+| 多智能体深度研究 | Deep Agents 0.7（create_deep_agent + SubAgent + TodoListMiddleware：规划/派活/共享虚拟文件系统） |
 | 工具协议 | MCP（FastMCP）+ langchain-mcp-adapters |
 | HTTP 服务化 | FastAPI + Uvicorn（同一进程提供 REST `/api` 与 MCP Streamable HTTP `/mcp`） |
 | Web 界面 | Gradio 6.x |
@@ -120,6 +123,7 @@ recruit-agent/
 │   ├── doc_parser.py         # 文档解析：PDF/Word 文字层 + 图片视觉 OCR + 文本 → 纯文本
 │   ├── jd_generator.py       # JD 智能生成：few-shot 检索同类范例 + 客户要求优先 + 结构化输出
 │   ├── hybrid_retriever.py   # 混合检索：BM25 + 向量 + RRF + rerank（总入口 hybrid_search）
+│   ├── deep_research.py      # Deep Agents：研究主管 + 技能/任职要求两子智能体并行检索，写共享文件综合成带引用报告
 │   ├── resume_multi_agent.py # 多智能体：Supervisor 串行双专家（简历分析 → RAG 人岗匹配）
 │   ├── resume_parallel_agents.py # 多智能体：静态并行三专家（技术/薪资/稳定性 fan-out/fan-in）
 │   ├── resume_batch_screen.py   # 多智能体：Send 动态扇出，N 份简历批量初筛
@@ -172,7 +176,8 @@ python recruit_graph/resume_batch_screen.py     # 多智能体：Send 动态扇�
 python recruit_graph/resume_unified_supervisor.py  # 毕业作品：主管意图路由 + 三子图统一调度（三场景实测）
 python recruit_graph/web_agent.py  # Gradio 网页版：浏览器打开 http://127.0.0.1:7860
 python recruit_graph/web_stream_agent.py  # 网页完整版：思考过程直播 + 跨轮记忆
-python web_workbench.py          # 统一工作台：三模块网页（岗位管理/简历初筛/问答与JD生成），打开 http://127.0.0.1:7860
+python web_workbench.py          # 统一工作台：四模块网页（岗位管理/简历初筛/问答与JD生成/深度研究），打开 http://127.0.0.1:7860
+python -m recruit_graph.deep_research  # 命令行直接跑一次深度研究（打印过程轨迹 / 共享文件 / 带引用报告）
 python recruit_mcp/agent_recruit_client.py  # MCP：Agent 自主调用 8 个真实后端工具（stdio）
 python recruit_mcp/http_app.py              # 服务化：起常驻 FastAPI，同时提供 REST(/api) 与 MCP(/mcp)
 # 上一条服务启动后，另开一个终端：
@@ -305,9 +310,10 @@ handler.print_summary()
 - [x] **五层容错与健壮性**：LLM 超时重试、工具结构化 error、串联短路 + 退避重试、编排层停手、rerank 降级，避免脏数据与级联失败（`recruit_mcp/recruit_server.py`、`recruit_graph/candidate_store.py`、`hybrid_retriever.py`）。
 - [x] **精排/粗排开关**：`hybrid_search(..., use_rerank=)` 一路透传到 LangGraph 工具 / MCP / REST，在最准（精排）与最快（粗排）间切换。
 - [x] **可观测（Observability）**：基于 LangChain `AsyncCallbackHandler` 记录每轮 LLM/工具调用、token、耗时与成败，控制台实时日志 + JSONL 落盘，可平滑替换为 Langfuse（`recruit_mcp/observability.py`）。
-- [x] **统一工作台 + 文档解析 + JD 生成**：Gradio 三模块工作台（岗位管理、简历逐份初筛累积、知识库问答与 JD 生成）；PDF/Word/图片 OCR 解析（`doc_parser.py`）；JD 生成器 few-shot RAG 检索同类范例 + 客户要求优先 + Function Calling 结构化输出；岗位按 id 更新与简历姓名防脏（`web_workbench.py`、`jd_generator.py`、`jd_store.py`）。
+- [x] **统一工作台 + 文档解析 + JD 生成**：Gradio 四模块工作台（岗位管理、简历逐份初筛累积、知识库问答与 JD 生成）；PDF/Word/图片 OCR 解析（`doc_parser.py`）；JD 生成器 few-shot RAG 检索同类范例 + 客户要求优先 + Function Calling 结构化输出；岗位按 id 更新与简历姓名防脏（`web_workbench.py`、`jd_generator.py`、`jd_store.py`）。
 - [ ] **部署上线**：真实数据、服务器部署、公网可访问。
-- [ ] **能力 B（对标分析）**：一批同类 JD 反推合理技术栈与薪资行情；高级版用 Deep Agents 做"招聘行业深度研究 Agent"。
+- [x] **Deep Agents 深度研究（多智能体规划/并行/共享文件）**：研究主管 write_todos 规划 + 两个 SubAgent 并行检索本地 JD、写共享虚拟文件，主管读回综合成每条带来源块 id 的报告；已接进统一工作台第 4 个标签「深度研究」，同时返回可读过程轨迹（`recruit_graph/deep_research.py`）。
+- [ ] **能力 B（对标分析）**：一批同类 JD 反推合理技术栈与薪资行情。
 
 ## License
 

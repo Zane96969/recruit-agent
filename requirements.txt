@@ -17,3 +17,6 @@ gradio>=6.0.0
 # ===== 文档解析（统一工作台上传 PDF / Word 简历；图片走视觉模型 OCR）=====
 pymupdf>=1.24.0
 python-docx>=1.1.0
+
+# ===== 深度研究（Deep Agents：主管规划 + 多子智能体并行检索 + 共享文件系统）=====
+deepagents>=0.7.28
