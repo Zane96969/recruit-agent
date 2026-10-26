@@ -1,16 +1,14 @@
 """岗位 JD 的 SQLite 存储层（第二张表：jds）。"""
 
 import hashlib
-import sqlite3
 from datetime import datetime
-from pathlib import Path
+
+from recruit_graph.db import DB_PATH, connect as _connect
 from recruit_graph.jd_vector_store import (
     upsert_jd,
     delete_jd_vectors,
     rename_jd_vectors,
 )
-
-DB_PATH = Path(__file__).resolve().parent / "recruit_real.db"
 
 _CREATE_JD_TABLE = """
     CREATE TABLE IF NOT EXISTS jds (
@@ -21,13 +19,6 @@ _CREATE_JD_TABLE = """
         created_at TEXT
     )
 """
-
-
-def _connect():
-    """开一个新连接，并让查询结果能用列名取值（row['jd_name']）。"""
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
 
 
 def save_jd(jd_name: str, jd_text: str) -> dict:

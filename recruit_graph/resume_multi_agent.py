@@ -22,7 +22,7 @@ from langgraph.prebuilt import ToolNode
 from langchain_core.messages import HumanMessage, SystemMessage
 
 # 复用 graph_tools 里的聊天模型和两个专家工具，不重复创建
-from graph_tools import chat_model, analyze_resume_worker, match_jd_worker
+from recruit_graph.graph_tools import chat_model, analyze_resume_worker, match_jd_worker
 
 
 # State：公共黑板，messages 用 add_messages 自动追加（不覆盖）

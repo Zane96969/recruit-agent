@@ -10,7 +10,7 @@ from langchain_core.messages import HumanMessage
 from pathlib import Path
 
 # 复用 graph_tools 里现成的两个招聘工具和聊天模型，不重复创建
-from graph_tools import retrieve_jd_info, analyze_jd_info, chat_model
+from recruit_graph.graph_tools import retrieve_jd_info, analyze_jd_info, chat_model
 
 
 # State：公共黑板；messages 用 add_messages 自动追加（不覆盖）

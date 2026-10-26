@@ -1,22 +1,11 @@
-openai>=3.0.0
-requests>=2.32.0
-python-dotenv>=1.0.0
-chromadb>=1.5.9
-rank-bm25>=0.2.2
-jieba>=0.42.1
-langchain>=1.4.0
-langgraph>=1.2.0
-langchain-openai>=1.6.0
-langchain-chroma>=1.1.0
-mcp>=1.30.0
-langchain-mcp-adapters>=0.1.14
-fastapi>=0.115.0
-uvicorn>=0.30.0
-gradio>=6.0.0
-
-# ===== 文档解析（统一工作台上传 PDF / Word 简历；图片走视觉模型 OCR）=====
-pymupdf>=1.24.0
-python-docx>=1.1.0
-
-# ===== 深度研究（Deep Agents：主管规划 + 多子智能体并行检索 + 共享文件系统）=====
-deepagents>=0.7.28
+# 依赖只在 pyproject.toml 里声明一份，这里仅作为“从仓库根目录可编辑安装”的入口，
+# 避免两个文件各存一份依赖列表、改一处忘另一处。
+#
+#   python -m venv .venv && .\.venv\Scripts\Activate.ps1
+#   pip install -r requirements.txt        # 等价于 pip install -e .
+#   pip install -e ".[dev]"                # 需要跑测试时（额外装 pytest）
+#
+# 需要“精确到补丁版本”的可复现环境时，装完执行一次：
+#   pip freeze > requirements.lock.txt
+# 之后重装用 pip install -r requirements.lock.txt（lock 文件不要手改）。
+-e .

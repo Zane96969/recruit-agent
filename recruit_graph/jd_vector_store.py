@@ -24,6 +24,21 @@ vectorstore = Chroma(
     embedding_function=embeddings,
 )
 
+# 向量库内容版本号：每次增/删/重建都 +1。检索层（hybrid_retriever）靠它判断
+# 本地缓存（全量块快照 + BM25 索引）是否失效，避免每次查询都重新拉库、重新分词。
+_index_version = 0
+
+
+def index_version() -> int:
+    """当前内容版本号（进程内计数，配合集合总数一起作为缓存键）。"""
+    return _index_version
+
+
+def _bump_version() -> None:
+    """内容变化时推进版本号，让检索层缓存立刻失效。"""
+    global _index_version
+    _index_version += 1
+
 
 def split_sentences(text):
     """按句号切成句子列表：补回句号、滤掉空白块。"""
@@ -36,12 +51,14 @@ def upsert_jd(jd_id: int, jd_name: str, jd_text: str) -> int:
     ids = [f"jd{jd_id}_{i}" for i in range(len(chunks))]
     metadatas = [{"jd_id": jd_id, "jd_name": jd_name} for _ in chunks]
     vectorstore.add_texts(texts=chunks, ids=ids, metadatas=metadatas)
+    _bump_version()
     return len(chunks)
 
 
 def delete_jd_vectors(jd_id: int) -> None:
     """按 jd_id 删掉一份 JD 的所有向量块。"""
     vectorstore._collection.delete(where={"jd_id": jd_id})
+    _bump_version()
 
 
 def rename_jd_vectors(jd_id: int, jd_name: str) -> None:

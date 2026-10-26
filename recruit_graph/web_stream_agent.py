@@ -1,5 +1,20 @@
+import os
+import time
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+load_dotenv(REPO_ROOT / ".env")
+
 import gradio as gr
-from graph_tools import (
+from recruit_mcp.observability import ObservabilityHandler
+from langfuse.langchain import CallbackHandler as LangfuseCallbackHandler
+
+# 每轮 Agent 运行的可观测汇总（JSONL：一行一条记录），已在 .gitignore 排除
+LOG_FILE = REPO_ROOT / "logs" / "agent_runs.jsonl"
+
+from recruit_graph.graph_tools import (
     chat_model,
     retrieve_jd_info,
     analyze_jd_info,
@@ -27,13 +42,25 @@ agent=create_agent(
                    "当用户让你从多个岗位里推荐或判断最适合哪一个时，只给出匹配度最高的 1 个岗位，并用一两句话说明理由（最关键的匹配点），不要把所有岗位逐个罗列对比，除非用户明确要求看全部岗位的对比。如果用户曾要求“直接说结果”或“简洁回答”，就要一直保持这种风格：先给结论、不铺垫、不展开，即使用户后面的消息里没有重复这条要求，也必须照做，直到用户明确要求“详细展开”。回答简洁。"
                    ),checkpointer=memory
 )
-def stream_bot(history):
+async def stream_bot(history):
     user_text = history[-1]["content"]
-    config = {"configurable": {"thread_id": "zhang-001"}}
+    started = time.perf_counter()
+    handler = ObservabilityHandler(
+        run_title="聊天版",
+        verbose=False,
+        log_path=LOG_FILE,
+    )
+    callbacks = [handler]
+    if os.getenv("LANGFUSE_SECRET_KEY"):
+        callbacks.append(LangfuseCallbackHandler())
+    config = {
+        "configurable": {"thread_id": "zhang-001"},
+        "callbacks": callbacks,
+    }
     answer = ""          # 当前普通回复的累积文本
     answer_idx = None    # 普通回复气泡在 history 中的下标
     pending_tools = {}   # 工具调用 index -> {name, args, bubble_idx}
-    for chunk, _meta in agent.stream(
+    async for chunk, _meta in agent.astream(
         {"messages": [("user", user_text)]},
         stream_mode="messages",
         config=config,
@@ -102,6 +129,15 @@ def stream_bot(history):
             answer = ""
             answer_idx = None
             yield history
+    total = time.perf_counter() - started
+    handler.print_summary()
+    history.append(ChatMessage(
+        role="assistant",
+        content=handler.metrics_text(total),
+        metadata={"title": "📊 本轮运行指标", "status": "done"},
+    ))
+    yield history
+
 def add_user(user_text,history):
     return" " ,history + [{"role": "user", "content": user_text}]
 

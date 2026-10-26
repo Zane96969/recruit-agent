@@ -97,6 +97,11 @@
 
 ```
 recruit-agent/
+├── run.py                    # 一键启动器：自动找/建 .venv，用对的解释器启动入口（python run.py --list）
+├── start.bat                 # Windows 双击入口（等价于 python run.py）
+├── pyproject.toml            # 项目元数据 + 依赖声明（pip install -e . 后包可在任何目录导入）
+├── uv.lock                   # 锁定到具体版本（uv sync --frozen 可完全复现环境）
+├── tests/                    # 回归测试（pytest，第一批守候选人写入的 id 不变式）
 ├── agent_code_templates.py   # 共享模板：客户端、切块、检索、护栏、ReAct 骨架
 ├── recruit_ingest.py         # 手写：JD 切块并写入向量库
 ├── recruit_qa.py             # 手写：检索问答（带出处）
@@ -118,6 +123,7 @@ recruit-agent/
 ├── recruit_graph/            # LangGraph 编排版 + 真实数据层
 │   ├── graph_tools.py        # 招聘工具：JD 画像 + 简历分析/人岗匹配（含 InjectedState、全量 JD 评分）
 │   ├── jd_store.py           # SQLite 岗位层：jds/matchings 增删查 + 触发向量双写
+│   ├── db.py                 # SQLite 公共层：DB_PATH / 连接 / 候选人 UPSERT（重复入库 id 不变）
 │   ├── candidate_store.py    # SQLite 候选人层：save_candidate 初筛落库 / list_candidates 排名
 │   ├── jd_vector_store.py    # Chroma 向量层：切块、embedding、岗位向量增删改
 │   ├── doc_parser.py         # 文档解析：PDF/Word 文字层 + 图片视觉 OCR + 文本 → 纯文本
@@ -143,6 +149,15 @@ recruit-agent/
 
 ## 快速开始（Windows PowerShell）
 
+> **最省事的方式**：`python run.py`（或直接双击 `start.bat`）。
+> 这个启动器只依赖标准库，会用系统 Python 运行，但**自动切到 `.venv` 里的解释器**去跑真正的程序；`.venv` 不存在就自动创建并装依赖（有 `uv` 用 `uv sync --frozen` 按 `uv.lock` 装，版本完全一致；没有就退回 pip）。`python run.py --list` 看全部入口（`workbench / qa / app / deep / http` 等）。
+> 机器上已经有能跑的环境，也可以借来用、不重新装：
+> `python run.py --python D:\somewhere\.venv\Scripts\python.exe`
+> 借用一次之后路径会被记到 `.python-path`（git 忽略），以后直接 `python run.py` 就行；想换回自动选择用 `python run.py --forget`。
+> 这样就再也不用记"到底该用哪个 python"，也不会再撞上 `No module named 'gradio'`。
+>
+> 下面是从零开始的完整步骤（想手动控制时用）。
+
 ```powershell
 # 1. 克隆并进入
 git clone https://github.com/<your-username>/recruit-agent.git
@@ -155,8 +170,10 @@ python -m venv .venv
 # 3. 配置密钥：复制模板，编辑 .env 填入 API_KEY
 copy .env.example .env
 
-# 4. 安装依赖
-pip install -r requirements.txt
+# 4. 安装（可编辑安装：装依赖 + 把项目注册成包）
+#    requirements.txt 里只有一行 `-e .`，依赖统一在 pyproject.toml 里声明
+pip install -e .
+#    需要跑测试时：pip install -e ".[dev]"
 
 # 5. 构建向量库（手写版切块入库，生成 chroma_db/）
 python recruit_ingest.py
@@ -168,22 +185,26 @@ python seed_candidates.py       # 简历：画像→匹配→落库→排名（�
 # 6. 运行
 python recruit_qa.py            # 手写：检索问答
 python recruit_profile.py       # 手写：人才画像
-python recruit_lc/agent.py      # LangChain 版：工具调用 + 记忆
-python recruit_graph/app.py     # LangGraph 版：状态机 + 持久记忆 + 人工审批
-python recruit_graph/resume_multi_agent.py      # 多智能体：简历分析→人岗匹配串行双专家
-python recruit_graph/resume_parallel_agents.py  # 多智能体：三专家静态并行评估（fan-out/fan-in）
-python recruit_graph/resume_batch_screen.py     # 多智能体：Send 动态扇出，N 份简历批量初筛
-python recruit_graph/resume_unified_supervisor.py  # 毕业作品：主管意图路由 + 三子图统一调度（三场景实测）
-python recruit_graph/web_agent.py  # Gradio 网页版：浏览器打开 http://127.0.0.1:7860
-python recruit_graph/web_stream_agent.py  # 网页完整版：思考过程直播 + 跨轮记忆
+python -m recruit_lc.agent      # LangChain 版：工具调用 + 记忆
+python -m recruit_graph.app     # LangGraph 版：状态机 + 持久记忆 + 人工审批
+python -m recruit_graph.resume_multi_agent      # 多智能体：简历分析→人岗匹配串行双专家
+python -m recruit_graph.resume_parallel_agents  # 多智能体：三专家静态并行评估（fan-out/fan-in）
+python -m recruit_graph.resume_batch_screen     # 多智能体：Send 动态扇出，N 份简历批量初筛
+python -m recruit_graph.resume_unified_supervisor  # 毕业作品：主管意图路由 + 三子图统一调度（三场景实测）
+python -m recruit_graph.web_agent  # Gradio 网页版：浏览器打开 http://127.0.0.1:7860
+python -m recruit_graph.web_stream_agent  # 网页完整版：思考过程直播 + 跨轮记忆
 python web_workbench.py          # 统一工作台：四模块网页（岗位管理/简历初筛/问答与JD生成/深度研究），打开 http://127.0.0.1:7860
 python -m recruit_graph.deep_research  # 命令行直接跑一次深度研究（打印过程轨迹 / 共享文件 / 带引用报告）
-python recruit_mcp/agent_recruit_client.py  # MCP：Agent 自主调用 8 个真实后端工具（stdio）
-python recruit_mcp/http_app.py              # 服务化：起常驻 FastAPI，同时提供 REST(/api) 与 MCP(/mcp)
+python -m recruit_mcp.agent_recruit_client  # MCP：Agent 自主调用 8 个真实后端工具（stdio）
+python -m recruit_mcp.http_app              # 服务化：起常驻 FastAPI，同时提供 REST(/api) 与 MCP(/mcp)
 # 上一条服务启动后，另开一个终端：
-python recruit_mcp/agent_http_client.py     # Agent 经 Streamable HTTP 连 http://127.0.0.1:8000/mcp
+python -m recruit_mcp.agent_http_client     # Agent 经 Streamable HTTP 连 http://127.0.0.1:8000/mcp
 ```
 
+> **为什么子目录脚本用 `python -m 包名.模块` 而不是 `python 路径/文件.py`**：直接给文件路径时，Python 只把**脚本所在目录**加进 `sys.path`，仓库根不在里面，于是 `from recruit_graph.xxx import ...` 会报 `ModuleNotFoundError`。`-m` 方式把**当前目录**加进搜索路径，在仓库根执行必定能找到包；配合第 4 步的 `pip install -e .`，在任何目录都能跑。IDE 里能跑只是因为 IDE 偷偷加了项目根，别当成项目本身能跑。
+>
+> **常见报错 `ModuleNotFoundError: No module named 'gradio'`（或 langchain/langgraph）**：说明这条命令是用**系统自带的 python** 跑的，不是虚拟环境里的。先 `.\\.venv\\Scripts\\Activate.ps1`，或直接用 `.\\.venv\\Scripts\\python.exe xxx.py`，再运行。命令行前缀显示 `C:\\Python3xx\\python.exe` 就是踩了这个坑。
+>
 > 需要一份 OpenAI 兼容的 `.env`：聊天模型默认 DeepSeek（`MODEL=deepseek-chat`、`BASE_URL=https://api.deepseek.com`），检索还要用到 BAAI/bge-large-zh 向量模型与 bge-reranker 精排模型。
 > 若所选平台（如 DeepSeek 官方）不提供 bge 向量/精排，可把 `BASE_URL` 指向同时提供这些模型的兼容服务（如硅基流动 SiliconFlow）并相应调整 `MODEL`；聊天、向量、精排三处都读同一份 `.env`，代码不用改。
 
@@ -197,7 +218,7 @@ python recruit_mcp/agent_http_client.py     # Agent 经 Streamable HTTP 连 http
 启动（仓库根目录）：
 
 ```powershell
-python recruit_mcp/http_app.py
+python -m recruit_mcp.http_app
 # 或：uvicorn recruit_mcp.http_app:app --host 127.0.0.1 --port 8000
 ```
 
@@ -287,6 +308,15 @@ handler.print_summary()
 - 每轮汇总还会追加一行 JSON 到 `logs/agent_runs.jsonl`（JSONL：一行一条记录），便于事后统计成本、失败率、各工具耗时；
 - token 兼容新旧两种返回位置（`message.usage_metadata` 与 `llm_output["token_usage"]`）；
 - 这正是 Langfuse / LangSmith 的底层原理（都是一个 callback handler）。想要 Web 可视化界面时，把 `ObservabilityHandler` 换成 Langfuse 的 `CallbackHandler`（`config={"callbacks":[langfuse_handler]}`）即可，业务代码无需改动。
+
+### 4. 回归测试
+
+```powershell
+pip install -e ".[dev]"
+pytest          # 现有用例只依赖标准库，不需要 API_KEY / 向量库，可离线跑
+```
+
+第一批用例守的是**候选人写入的不变式**（`tests/test_db_upsert.py`）：重复入库必须原地更新、`id` 不能变，否则 `matchings.candidate_id` 会指向一条不存在的候选人 —— 这种数据损坏不会报错，只能靠测试拦。
 
 ## 数据说明
 

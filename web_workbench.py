@@ -15,9 +15,28 @@ import json
 import os
 import re
 import sys
+import time
 from pathlib import Path
 
-import gradio as gr
+try:
+    import gradio as gr
+except ModuleNotFoundError as exc:  # 用错解释器时给一句人话，而不是裸 traceback
+    if exc.name not in {"gradio", "langchain_core"}:
+        raise
+    raise SystemExit(
+        "\n启动失败：当前这个 Python 没装项目依赖（缺 "
+        f"{exc.name}）。\n"
+        f"当前解释器：{sys.executable}\n\n"
+        "两种解法：\n"
+        "  1) 已有虚拟环境 → 用它的 python 启动本文件，例如：\n"
+        "     <项目>\\.venv\\Scripts\\python.exe web_workbench.py\n"
+        "  2) 还没建 → 在仓库根目录执行：\n"
+        "     python -m venv .venv\n"
+        "     .\\.venv\\Scripts\\python.exe -m pip install -e .\n"
+        "然后 .\\.venv\\Scripts\\Activate.ps1 激活，再 python web_workbench.py\n\n"
+        "注意：不要用系统自带的 python.exe 直接跑，它没有项目依赖。\n"
+    ) from exc
+
 from langchain_core.messages import HumanMessage, SystemMessage
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -41,15 +60,23 @@ from recruit_graph.jd_store import (
     update_jd,
 )
 from recruit_graph.jd_generator import generate_jd_draft
+from recruit_mcp.observability import ObservabilityHandler
 
 FILE_TYPES = [".pdf", ".docx", ".txt", ".md", ".png", ".jpg", ".jpeg", ".webp", ".bmp"]
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
 
 
 # ===================== 公共小工具：下拉、排名、计数 =====================
-def cid_from_label(label: str) -> int:
-    """从 '岗位名/姓名（#7）' 里解出 id=7。"""
-    return int(label.rsplit("#", 1)[1].rstrip("）"))
+# 下拉项统一格式：'岗位名/姓名（#7）'。用正则只认结尾的 "#数字"，
+# 而不是按 '#' 切分 —— 岗位名自己就常带 '#'（如「C# 后端开发」），
+# 按 '#' 切会在这种名字上切错位；标签没有编号时也要能识别出来，而不是崩。
+_LABEL_ID = re.compile(r"#\s*(\d+)\s*[）)]?\s*$")
+
+
+def cid_from_label(label: str) -> int | None:
+    """从 '岗位名/姓名（#7）' 里解出 id=7；解析不出来返回 None（调用方提示刷新列表）。"""
+    match = _LABEL_ID.search(label or "")
+    return int(match.group(1)) if match else None
 
 
 def jd_choices() -> list[str]:
@@ -128,6 +155,14 @@ def jd_load(label: str):
             gr.update(),
         )
     jd_id = cid_from_label(label)
+    if jd_id is None:
+        return (
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            "这个选项没有岗位编号（可能是组件状态过期），请点「刷新列表」后重新选择",
+            gr.update(),
+        )
     jd = get_jd(jd_id)
     if not jd:
         return (
@@ -206,7 +241,14 @@ def jd_save(name: str, text: str, edit_id):
 def jd_delete(label: str):
     if not label:
         return gr.update(choices=jd_choices()), gr.update(), "请先选择要删除的岗位"
-    ok = delete_jd(cid_from_label(label))
+    jd_id = cid_from_label(label)
+    if jd_id is None:
+        return (
+            gr.update(choices=jd_choices()),
+            gr.update(),
+            "这个选项没有岗位编号（可能是组件状态过期），请点「刷新列表」后重新选择",
+        )
+    ok = delete_jd(jd_id)
     msg = ("已删除：" + label) if ok else "删除失败"
     return gr.update(choices=jd_choices()), gr.update(value=jd_rows()), msg
 
@@ -393,6 +435,13 @@ def r_delete(label: str):
             "请先选择要删除的人",
         )
     cid = cid_from_label(label)
+    if cid is None:
+        return (
+            gr.update(choices=candidate_choices()),
+            rank_rows(0),
+            count_md(),
+            "这个选项没有候选人编号（可能是组件状态过期），请点「刷新排名 / 候选人列表」后重新选择",
+        )
     delete_matchings_by_candidate(cid)
     delete_candidate(cid)
     return (
@@ -404,52 +453,67 @@ def r_delete(label: str):
 
 
 # ===================== Tab 3：知识库问答 =====================
-def qa_ask(question: str, mode: str) -> str:
-    """基于已录入 JD 做混合检索，再让模型只依据资料回答。"""
+async def qa_ask(question: str, mode: str):
+    """基于已录入 JD 做混合检索，再让模型只依据资料回答；同时返回本轮可观测指标。"""
     if not (question or "").strip():
-        return "请输入问题"
+        return "请输入问题", ""
+    # 这轮专用的记录仪：verbose=False 只在最后汇总，不在控制台逐步刷屏
+    started = time.perf_counter()
+    handler = ObservabilityHandler(run_title="知识库问答", verbose=False)
     use_rerank = mode.startswith("精排")
     mode_tag = "精排（BM25+向量+重排）" if use_rerank else "粗排（BM25+向量）"
     docs = hybrid_search(question, use_rerank=use_rerank)
     if not docs:
-        return "岗位知识库是空的，请先在【岗位管理】录入岗位。"
+        return "岗位知识库是空的，请先在【岗位管理】录入岗位。", ""
 
     context = "\n".join(f"[{i + 1}] {d.page_content}" for i, d in enumerate(docs))
     sources = set()
     for d in docs:
-        m = re.match(r"jd(\d+)_", d.metadata.get("id", ""))
-        if m:
-            jd = get_jd(int(m.group(1)))
-            if jd:
-                sources.add(jd.get("jd_name"))
-    reply = chat_model.invoke(
+        # 出处直接读检索结果的 metadata（jd_id 由向量层写入），
+        # 不再解析 "jd3_5" 这种块 id —— 那是实现细节，格式一变就会标错出处。
+        jd_id = d.metadata.get("jd_id")
+        if jd_id is None:
+            continue
+        jd = get_jd(jd_id)
+        if jd:
+            sources.add(jd.get("jd_name"))
+    # 用 ainvoke（异步调用）并挂上回调：模型每开始/结束一次，记录仪都会自动计数
+    reply = await chat_model.ainvoke(
         [
             SystemMessage(
                 content="你是招聘助手，只能依据下面给出的岗位资料回答；"
                 "资料里没有的内容明确说「资料不足」，不要编造。"
             ),
             HumanMessage(content=f"岗位资料：\n{context}\n\n问题：{question}"),
-        ]
+        ],
+        config={"callbacks": [handler]},
     )
     answer = reply.content.strip()
     answer += f"\n\n— 检索方式：{mode_tag}，命中 {len(docs)} 段"
     if sources:
         answer += "｜出处：" + "、".join(sources)
-    return answer
+    # 复用记录仪的统一指标格式，再补上这轮特有的检索命中段数
+    total = time.perf_counter() - started
+    metrics = handler.metrics_text(total)
+    metrics += f"｜命中 {len(docs)} 段（{mode_tag}）"
+    return answer, metrics
 
 
-def deep_research_ask(question: str):
+async def deep_research_ask(question: str):
     """深度研究：多智能体（主管规划 → 两个研究员并行检索 → 综合报告）。
 
-    返回 (报告, 过程轨迹)，界面分别填进两个框。
+    返回 (报告, 过程轨迹, 运行指标)，界面分别填进三个框。
     """
     if not (question or "").strip():
-        return "请输入要研究的岗位或主题。", ""
-    result = run_deep_research(question)
+        return "请输入要研究的岗位或主题。", "", ""
+    started = time.perf_counter()
+    handler = ObservabilityHandler(run_title="深度研究", verbose=False)
+    result = await run_deep_research(question, handler=handler)
+    total = time.perf_counter() - started
     report = result["report"]
     if result["files"]:
         report += "\n\n— 研究员共享文件：" + "、".join(result["files"])
-    return report, result["trace"]
+    return report, result["trace"], handler.metrics_text(total)
 
 
 # ===================== 界面 =====================
@@ -726,6 +790,7 @@ with gr.Blocks(title="招聘智能体工作台") as demo:
                 )
                 q_btn = gr.Button("提问", variant="primary")
             q_ans = gr.Textbox(label="回答", lines=12)
+            q_metrics = gr.Textbox(label="运行指标（可观测）", lines=3)
 
     with gr.Tab("深度研究"):
         with gr.Column(elem_classes="card"):
@@ -741,6 +806,7 @@ with gr.Blocks(title="招聘智能体工作台") as demo:
             d_btn = gr.Button("开始深度研究", variant="primary")
             d_report = gr.Textbox(label="最终报告（带来源引用）", lines=16)
             d_trace = gr.Textbox(label="过程轨迹（主管规划 / 派活 / 回报）", lines=10)
+            d_metrics = gr.Textbox(label="运行指标（可观测）", lines=3)
 
     # 事件绑定 —— 岗位
     jd_extract_btn.click(
@@ -807,11 +873,11 @@ with gr.Blocks(title="招聘智能体工作台") as demo:
         outputs=[r_dropdown, r_count, r_rank],
     )
 
-    # 事件绑定 —— 问答
-    q_btn.click(qa_ask, inputs=[q_box, q_rank], outputs=q_ans)
+    # 事件绑定 —— 问答（回答 + 运行指标两个输出）
+    q_btn.click(qa_ask, inputs=[q_box, q_rank], outputs=[q_ans, q_metrics])
 
-    # 事件绑定 —— 深度研究
-    d_btn.click(deep_research_ask, inputs=d_box, outputs=[d_report, d_trace])
+    # 事件绑定 —— 深度研究（报告 + 过程轨迹 + 运行指标三个输出）
+    d_btn.click(deep_research_ask, inputs=d_box, outputs=[d_report, d_trace, d_metrics])
 
     # 页面每次打开 / 刷新，都从库实时拉取最新岗位与候选人，避免显示旧快照
     demo.load(refresh_all, outputs=[jd_dropdown, jd_table, r_dropdown, r_count, r_rank])

@@ -30,7 +30,7 @@ from langgraph.types import Send
 from langchain_core.messages import HumanMessage, SystemMessage
 
 # 复用 graph_tools 里的聊天模型，不重复创建
-from graph_tools import chat_model
+from recruit_graph.graph_tools import chat_model
 
 
 class BatchState(TypedDict):

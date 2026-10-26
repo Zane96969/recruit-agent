@@ -1,7 +1,7 @@
 import os
 from dotenv import load_dotenv
 from langchain_openai import  OpenAIEmbeddings
-from tools import retrieve_jd_info , analyze_jd_info
+from recruit_lc.tools import retrieve_jd_info , analyze_jd_info
 from langchain_chroma import Chroma
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import InMemorySaver

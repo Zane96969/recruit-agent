@@ -31,15 +31,17 @@ def retrieve_jd_info(question: str, use_rerank: bool = True) -> str:
 
 class TechStack(BaseModel):
     core_tech: list[str] = Field(description="核心技术栈")
-    optional_tech: list[str] = Field(description="可选技术栈", default=None)
+    optional_tech: list[str] = Field(description="可选技术栈", default_factory=list)
 
 
 class JobList(BaseModel):
     name: str = Field(description="岗位名称")
     salary: str = Field(description="薪资范围")
     location: str = Field(description="工作地点")
-    requirements: str = Field(description="岗位要求", default=None)
-    tech_stack: TechStack = Field(description="技术栈", default=None)
+    # 下面三个字段 JD 里可能没写。注意「声明类型」与「默认值」必须对得上：
+    # 声明成 list/str 却给 None 会让 pydantic 报校验错误，缺省值要和类型一致。
+    requirements: str = Field(description="岗位要求，没有就填空字符串", default="")
+    tech_stack: TechStack | None = Field(description="技术栈，没有就给 null", default=None)
 
 
 chat_model = ChatOpenAI(

@@ -18,12 +18,6 @@ _MODEL = os.getenv("MODEL", "deepseek-chat")
 
 
 # ============ 第一步：检索最相似的整份 JD 当范例 ============
-def _chunk_id_to_jd_id(chunk_id: str) -> int:
-    """把向量块 id（形如 'jd3_5'）还原成它所属的岗位 id（数字 3）。"""
-    head = chunk_id.split("_")[0]  # 'jd3_5' 按下划线切开取第一段 → 'jd3'
-    return int(head.replace("jd", ""))  # 去掉开头的 'jd'，剩下的转成整数 3
-
-
 def retrieve_examples(job_name: str, n: int = 2) -> list[dict]:
     """输入岗位名，返回 n 份最相似的整份 JD 当范例（去重，每份含岗位名+全文）。
 
@@ -42,11 +36,15 @@ def retrieve_examples(job_name: str, n: int = 2) -> list[dict]:
         use_rerank=False,
     )
 
-    # 第二组：从块 id 还原岗位 id，按出现顺序去重
+    # 第二组：从块的 metadata 直接取岗位 id，按出现顺序去重
     # （同一份 JD 会有多个块排进来，范例只保留一份，不要重复）
     jd_ids = []
     for doc in docs:
-        jd_id = _chunk_id_to_jd_id(doc.metadata["id"])
+        # 用 metadata 里的字段，而不是解析 "jd3_5" 这种块 id 字符串：
+        # 块 id 是向量层的实现细节，格式一变就会静默错位到别的岗位，比报错更难查。
+        jd_id = doc.metadata.get("jd_id")
+        if jd_id is None:  # 老数据/异常块没有岗位 id，跳过而不是猜
+            continue
         if jd_id not in jd_ids:
             jd_ids.append(jd_id)
 

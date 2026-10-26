@@ -1,5 +1,5 @@
 import gradio as gr
-from graph_tools import chat_model, retrieve_jd_info, analyze_jd_info
+from recruit_graph.graph_tools import chat_model, retrieve_jd_info, analyze_jd_info
 from langchain.agents import create_agent
 
 tools = [retrieve_jd_info, analyze_jd_info]

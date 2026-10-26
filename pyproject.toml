@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "recruit-agent"
+version = "0.1.0"
+description = "面向招聘场景的 AI Agent：JD 结构化画像 + 混合检索 RAG + 多智能体编排 + MCP 工具服务"
+readme = "README.md"
+# 下限 3.11：deepagents 要求 >=3.11，写 3.10 会让依赖求解器在 3.10 分支上无解
+requires-python = ">=3.11,<4.0"
+license = { text = "MIT" }
+keywords = ["agent", "langgraph", "rag", "mcp", "recruiting"]
+dependencies = [
+    "openai>=3.0.0",
+    "requests>=2.32.0",
+    "python-dotenv>=1.0.0",
+    "chromadb>=1.5.9",
+    "rank-bm25>=0.2.2",
+    "jieba>=0.42.1",
+    "langchain>=1.4.0",
+    "langgraph>=1.2.0",
+    "langchain-openai>=1.6.0",
+    "langchain-chroma>=1.1.0",
+    "mcp>=1.30.0",
+    "langchain-mcp-adapters>=0.1.14",
+    "fastapi>=0.115.0",
+    "uvicorn>=0.30.0",
+    "gradio>=6.0.0",
+    "pymupdf>=1.24.0",
+    "python-docx>=1.1.0",
+    "deepagents>=0.7.28",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[tool.setuptools]
+packages = ["recruit_graph", "recruit_lc", "recruit_mcp"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

@@ -10,6 +10,8 @@
 所以研究员之间靠「写文件」、主管靠「读文件」传递结果。
 """
 
+import json
+
 from langchain_core.tools import tool
 from langchain.agents.middleware import TodoListMiddleware
 from deepagents import create_deep_agent
@@ -89,65 +91,141 @@ def _build_agent():
 
 
 # 第四组：把消息流整理成「过程轨迹」，让人能看清多智能体每一步在干什么
+def _as_dict(value) -> dict:
+    """把工具入参规整成 dict。
+
+    模型（尤其 14B 这类小模型）不总是规规矩矩返回 dict：
+    - 有时把 arguments 直接返回成一串 JSON 文本；
+    - 偶尔给 None。
+    直接 `args.get(...)` 会在第一种情况下抛 AttributeError，把整条轨迹打断。
+    """
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _todos_text(todos) -> str:
+    """待办列表兼容两种写法：`[{'content': '研究技能'}]` 与 `['研究技能']`。"""
+    names = []
+    for item in todos or []:
+        if isinstance(item, dict):
+            text = item.get("content") or item.get("task") or ""
+        else:
+            text = str(item)
+        if text:
+            names.append(str(text))
+    return "、".join(names)
+
+
 def _build_trace(messages) -> str:
-    """遍历主管这一层的消息，提取规划、派活、工具回报，拼成可读日志。"""
+    """遍历主管这一层的消息，提取规划、派活、工具回报，拼成可读日志。
+
+    轨迹只是"给人看的故事线"，属于增强项：单条消息解析不了就跳过并留痕，
+    绝不让它抛异常 —— 否则深度研究跑完一分半、token 花完，报告却因为
+    日志格式化失败而拿不到。
+    """
     steps = []
     for index, msg in enumerate(messages):
         kind = msg.__class__.__name__
-        if kind == "AIMessage":
-            for call in getattr(msg, "tool_calls", None) or []:
-                name = call.get("name", "")
-                args = call.get("args", {}) or {}
-                if name == "write_todos":
-                    todos = args.get("todos", [])
-                    names = "、".join(t.get("content", "") for t in todos)
-                    steps.append(f"[{index}] 🧠 主管规划：{names}")
-                elif name == "task":
-                    target = (
-                        args.get("subagent_type")
-                        or args.get("name")
-                        or args.get("subagent")
-                        or "研究员"
-                    )
-                    desc = str(args.get("description", ""))[:110]
-                    steps.append(f"[{index}] 📤 派活→{target}：{desc}")
-                else:
-                    steps.append(f"[{index}] 🔧 调用工具：{name}")
-        elif kind == "ToolMessage":
-            text = str(getattr(msg, "content", "")).replace("\n", " ")
-            steps.append(f"[{index}] 📥 回报：{text[:150]}")
+        try:
+            if kind == "AIMessage":
+                for call in getattr(msg, "tool_calls", None) or []:
+                    if not isinstance(call, dict):
+                        call = {
+                            "name": getattr(call, "name", ""),
+                            "args": getattr(call, "args", {}),
+                        }
+                    name = call.get("name", "")
+                    args = _as_dict(call.get("args"))
+                    if name == "write_todos":
+                        steps.append(f"[{index}] 🧠 主管规划：{_todos_text(args.get('todos'))}")
+                    elif name == "task":
+                        target = (
+                            args.get("subagent_type")
+                            or args.get("name")
+                            or args.get("subagent")
+                            or "研究员"
+                        )
+                        desc = str(args.get("description", ""))[:110]
+                        steps.append(f"[{index}] 📤 派活→{target}：{desc}")
+                    else:
+                        steps.append(f"[{index}] 🔧 调用工具：{name}")
+            elif kind == "ToolMessage":
+                text = str(getattr(msg, "content", "")).replace("\n", " ")
+                steps.append(f"[{index}] 📥 回报：{text[:150]}")
+        except Exception as exc:  # noqa: BLE001
+            steps.append(f"[{index}] ⚠ 轨迹解析跳过（{type(exc).__name__}）")
     return "\n".join(steps)
 
 
+
 # 第五组：对外唯一入口——输入研究问题，返回报告、过程轨迹、共享文件清单
-def run_deep_research(question: str) -> dict:
-    """跑一次深度研究。
+async def run_deep_research(question: str, handler=None) -> dict:
+    """异步跑一次深度研究。
+
+    handler：可观测回调记录仪。传一个进来，主管和两个研究员内部
+    所有模型/工具调用都会被它记录（LangGraph 会把父级 callbacks 自动
+    传播给子智能体，不用分别挂）；不传则不记录。
 
     返回 dict：
     - report：主管综合后的最终报告（带引用）；
-    - trace：规划/派活/回报的过程日志（可观测雏形）；
-    - files：研究员写入共享文件系统的文件列表。
+    - trace：规划/派活/回报的过程日志（给人看的故事线）；
+    - files：研究员写入共享文件系统的文件列表；
+    - summary：本轮模型/工具次数、token 等指标汇总（给仪表盘看）。
     """
     question = (question or "").strip()
     if not question:
-        return {"report": "请先输入要研究的岗位或主题。", "trace": "", "files": []}
+        return {
+            "report": "请先输入要研究的岗位或主题。",
+            "trace": "",
+            "files": [],
+            "summary": None,
+        }
 
     agent = _build_agent()
-    state = agent.invoke({"messages": [{"role": "user", "content": question}]})
+    callbacks = [handler] if handler is not None else []
+    state = await agent.ainvoke(
+        {"messages": [{"role": "user", "content": question}]},
+        config={"callbacks": callbacks},
+    )
 
-    trace = _build_trace(state["messages"])
+    try:
+        trace = _build_trace(state["messages"])
+    except Exception as exc:  # noqa: BLE001
+        # 轨迹是增强项：拼不出来也要把报告交出去，别让用户白等一分半
+        trace = f"（过程轨迹生成失败：{type(exc).__name__}: {exc}；报告不受影响）"
     files = list(state.get("files", {}).keys())
     report = str(state["messages"][-1].content).strip()
-    return {"report": report, "trace": trace, "files": files}
+    summary = handler.summary() if handler is not None else None
+    return {"report": report, "trace": trace, "files": files, "summary": summary}
 
 
 if __name__ == "__main__":
-    result = run_deep_research("AI Agent 开发实习")
-    print("=" * 50)
-    print("过程轨迹：")
-    print(result["trace"])
-    print("=" * 50)
-    print("共享文件：", result["files"])
-    print("=" * 50)
-    print("最终报告：")
-    print(result["report"])
+    import asyncio
+    import sys
+    from pathlib import Path
+
+    # 直接运行本文件时，把项目根目录加进 import 路径，才能找到 recruit_mcp
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from recruit_mcp.observability import ObservabilityHandler
+
+    async def _demo():
+        handler = ObservabilityHandler(run_title="深度研究", verbose=True)
+        result = await run_deep_research("AI Agent 开发实习", handler=handler)
+        print("=" * 50)
+        print("过程轨迹：")
+        print(result["trace"])
+        print("=" * 50)
+        print("共享文件：", result["files"])
+        handler.print_summary()
+        print("=" * 50)
+        print("最终报告：")
+        print(result["report"])
+
+    asyncio.run(_demo())

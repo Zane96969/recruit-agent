@@ -13,12 +13,12 @@ from langgraph.types import Send
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
 
-from graph_tools import (
+from recruit_graph.graph_tools import (
     chat_model,
-    retriever,
     analyze_resume_worker,
     match_system,
 )
+from recruit_graph.hybrid_retriever import hybrid_search
 
 
 class RecruitState(TypedDict):
@@ -40,9 +40,14 @@ def serial_analyze(state: RecruitState) -> dict:
 
 
 def serial_match(state: RecruitState) -> dict:
-    """串行工位②：拿画像去岗位库检索 JD，再让匹配专家出报告。"""
+    """串行工位②：拿画像去岗位库检索 JD，再让匹配专家出报告。
+
+    检索统一走 hybrid_search（BM25 + 向量 + RRF + rerank），
+    不要再用裸的向量 retriever：同一套问题在两个入口必须命中同一批资料。
+    top_k=2 与原 retriever 的 k=2 保持一致。
+    """
     print("-- 串行车间② 检索JD + 人岗匹配 开工 --")
-    jd_docs = retriever.invoke(state["profile_json"])
+    jd_docs = hybrid_search(state["profile_json"], top_k=2)
     jd_text = "\n---\n".join(doc.page_content for doc in jd_docs)
     answer = chat_model.invoke(
         [

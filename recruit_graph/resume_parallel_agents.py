@@ -29,7 +29,7 @@ from langgraph.graph import StateGraph, START, END
 from langchain_core.messages import HumanMessage, SystemMessage
 
 # 复用 graph_tools 里的聊天模型，不重复创建
-from graph_tools import chat_model
+from recruit_graph.graph_tools import chat_model
 
 
 # 状态黑板：resume / job_desc 是三个专家共享的输入；

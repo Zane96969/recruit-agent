@@ -1,40 +1,21 @@
-"""候选人画像与匹配结果的 SQLite 存储层（供 FastAPI 调用，也可单独复用）。"""
+"""候选人画像与匹配结果的 SQLite 存储层（供 FastAPI / Gradio 调用，也可单独复用）。"""
 
 import hashlib
 import json
-import sqlite3
 import time
-from datetime import datetime
-from pathlib import Path
 
+from recruit_graph.db import DB_PATH, connect, upsert_candidate
 from recruit_graph.graph_tools import analyze_resume_worker, match_resume_worker
 
-DB_PATH = Path(__file__).resolve().parent / "recruit_real.db"
-
-_CREATE_TABLE = """
-    CREATE TABLE IF NOT EXISTS candidates (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT,
-        age TEXT,
-        education TEXT,
-        skills TEXT,
-        projects TEXT,
-        target_position TEXT,
-        expected_salary TEXT,
-        phone TEXT UNIQUE,
-        content_hash TEXT UNIQUE,
-        created_at TEXT,
-        matched_job TEXT,
-        match_score INTEGER
-    )
-"""
-
-
-def _connect():
-    """开一个新连接，并让查询结果能用列名取值（row['name']）。"""
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+__all__ = [
+    "DB_PATH",
+    "analyze_profile",
+    "delete_candidate",
+    "get_candidate_id",
+    "list_candidates",
+    "save_candidate",
+    "save_candidate_from_profile",
+]
 
 
 def _run_step(step_name: str, func, payload: dict, retries: int = 2):
@@ -56,8 +37,39 @@ def _run_step(step_name: str, func, payload: dict, retries: int = 2):
     raise RuntimeError(f"步骤【{step_name}】失败：{last_error}") from last_error
 
 
+def _build_row(profile: dict, resume_text: str, match_result: dict) -> dict:
+    """把「画像 + 匹配结果 + 简历原文」组装成一行候选人记录。
+
+    技能/项目在库里用逗号拼成一列（岗位量级小，够用且直观）；
+    手机号识别不到时存 NULL —— 唯一索引允许多个 NULL，不会把多个"未知"当成同一个人。
+    """
+    return {
+        "name": profile["name"],
+        "age": profile["age"],
+        "education": profile["education"],
+        "skills": ",".join(profile["skills"]),
+        "projects": ",".join(profile["projects"]),
+        "target_position": profile["target_position"],
+        "expected_salary": profile["expected_salary"],
+        "phone": profile["phone"] if profile["phone"] != "未知" else None,
+        "content_hash": hashlib.md5(resume_text.strip().encode("utf-8")).hexdigest(),
+        "matched_job": match_result["matched_job"],
+        "match_score": match_result["match_score"],
+    }
+
+
+def _write_candidate(row: dict) -> tuple[int, bool]:
+    """在一个事务里写入候选人，返回 (候选人 id, 是否为更新)。"""
+    conn = connect()
+    try:
+        with conn:  # 成功提交、异常回滚：要么整行写进去，要么一行都不写
+            return upsert_candidate(conn, row)
+    finally:
+        conn.close()
+
+
 def save_candidate(resume_text: str) -> dict:
-    """分析简历 → 打分 → 落库，返回画像与匹配结果；重复简历会覆盖。"""
+    """分析简历 → 打分 → 落库，返回画像与匹配结果；重复简历原地更新（id 不变）。"""
     # 第一步：简历分析（依赖 LLM）。它是整条链的刚需，失败整体重试后仍不行就短路。
     try:
         profile_json = _run_step(
@@ -87,49 +99,25 @@ def save_candidate(resume_text: str) -> dict:
         return {"error": "人岗匹配失败，候选人未入库", "detail": str(e)}
 
     # 第三步：写库。前两步都成功、数据都齐了才走到这里。
-    content_hash = hashlib.md5(resume_text.strip().encode("utf-8")).hexdigest()
-    phone = profile["phone"] if profile["phone"] != "未知" else None
-
-    conn = _connect()
     try:
-        conn.execute(_CREATE_TABLE)
-        conn.execute(
-            """
-            INSERT OR REPLACE INTO candidates
-                (name, age, education, skills, projects, target_position,
-                 expected_salary, phone, content_hash, created_at,
-                 matched_job, match_score)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                profile["name"],
-                profile["age"],
-                profile["education"],
-                ",".join(profile["skills"]),
-                ",".join(profile["projects"]),
-                profile["target_position"],
-                profile["expected_salary"],
-                phone,
-                content_hash,
-                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                match_result["matched_job"],
-                match_result["match_score"],
-            ),
+        candidate_id, is_update = _write_candidate(
+            _build_row(profile, resume_text, match_result)
         )
-        conn.commit()
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         return {"error": "写库失败，画像与匹配结果未保存", "detail": str(e)}
-    finally:
-        conn.close()
 
-    return {"profile": profile, "match": match_result}
+    return {
+        "profile": profile,
+        "match": match_result,
+        "candidate_id": candidate_id,
+        "is_update": is_update,
+    }
 
 
 def list_candidates(min_score: int = 0) -> list[dict]:
     """按匹配度从高到低返回候选人；min_score 可只保留该分数以上的人。"""
-    conn = _connect()
+    conn = connect()
     try:
-        conn.execute(_CREATE_TABLE)
         rows = conn.execute(
             """
             SELECT name, match_score, matched_job, target_position, id
@@ -152,12 +140,10 @@ def analyze_profile(resume_text: str) -> dict:
 
 def save_candidate_from_profile(profile: dict, resume_text: str) -> dict:
     """第二步：把（可能被用户改过的）画像入库。
-    同一份简历原文（content_hash）或手机号已存在 → UPDATE（保持原 id）；
+
+    同一份简历原文（content_hash）或手机号已存在 → 原地 UPDATE（id 不变）；
     否则 → INSERT 新行。
     """
-    content_hash = hashlib.md5(resume_text.strip().encode("utf-8")).hexdigest()
-    phone = profile["phone"] if profile["phone"] != "未知" else None
-
     # 姓名兜底：识别不到时统一成“未知姓名”，绝不让模型示例名（如张三）或
     # 板块标题混进库里；真实姓名以用户在界面对 JSON 的核对为准。
     name = (profile.get("name") or "").strip()
@@ -171,78 +157,21 @@ def save_candidate_from_profile(profile: dict, resume_text: str) -> dict:
         )
     )
 
-    conn = _connect()
-    try:
-        conn.execute(_CREATE_TABLE)
-        row = conn.execute(
-            """
-            SELECT id FROM candidates
-            WHERE content_hash = ? OR (phone IS NOT NULL AND phone = ?)
-            """,
-            (content_hash, phone),
-        ).fetchone()
-        if row:
-            conn.execute(
-                """
-                UPDATE candidates SET
-                    name = ?, age = ?, education = ?, skills = ?,
-                    projects = ?, target_position = ?, expected_salary = ?,
-                    phone = ?, matched_job = ?, match_score = ?, content_hash = ?
-                WHERE id = ?
-                """,
-                (
-                    profile["name"],
-                    profile["age"],
-                    profile["education"],
-                    ",".join(profile["skills"]),
-                    ",".join(profile["projects"]),
-                    profile["target_position"],
-                    profile["expected_salary"],
-                    phone,
-                    match_result["matched_job"],
-                    match_result["match_score"],
-                    content_hash,
-                    row["id"],
-                ),
-            )
-            is_update = True
-        else:
-            conn.execute(
-                """
-                INSERT INTO candidates
-                    (name, age, education, skills, projects, target_position,
-                     expected_salary, phone, content_hash, created_at,
-                     matched_job, match_score)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    profile["name"],
-                    profile["age"],
-                    profile["education"],
-                    ",".join(profile["skills"]),
-                    ",".join(profile["projects"]),
-                    profile["target_position"],
-                    profile["expected_salary"],
-                    phone,
-                    content_hash,
-                    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    match_result["matched_job"],
-                    match_result["match_score"],
-                ),
-            )
-            is_update = False
-        conn.commit()
-    finally:
-        conn.close()
-
-    return {"profile": profile, "match": match_result, "is_update": is_update}
+    candidate_id, is_update = _write_candidate(
+        _build_row(profile, resume_text, match_result)
+    )
+    return {
+        "profile": profile,
+        "match": match_result,
+        "candidate_id": candidate_id,
+        "is_update": is_update,
+    }
 
 
 def get_candidate_id(name: str) -> int | None:
     """按姓名查候选人 id；找不到返回 None（供评分记录关联用）。"""
-    conn = _connect()
+    conn = connect()
     try:
-        conn.execute(_CREATE_TABLE)
         row = conn.execute(
             "SELECT id FROM candidates WHERE name = ?", (name,)
         ).fetchone()
@@ -253,11 +182,10 @@ def get_candidate_id(name: str) -> int | None:
 
 def delete_candidate(candidate_id: int):
     """按 id 删除一个候选人，返回是否真的删掉了一行。"""
-    conn = _connect()
+    conn = connect()
     try:
-        conn.execute(_CREATE_TABLE)
-        cur = conn.execute("DELETE FROM candidates WHERE id = ?", (candidate_id,))
-        conn.commit()
+        with conn:
+            cur = conn.execute("DELETE FROM candidates WHERE id = ?", (candidate_id,))
         return cur.rowcount > 0
     finally:
         conn.close()

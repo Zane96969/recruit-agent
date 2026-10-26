@@ -133,6 +133,18 @@ class ObservabilityHandler(AsyncCallbackHandler):
         if self.log_path:
             self._write_jsonl(s)
 
+    def metrics_text(self, total: float | None = None) -> str:
+        """把本轮汇总拼成一行中文指标，供网页"运行指标"框直接显示（各入口共用）。"""
+        s = self.summary()
+        text = (
+            f"模型调用 {s['llm_calls']} 次｜工具调用 {s['tool_calls']} 次"
+            f"（失败 {s['tool_errors']}）｜"
+            f"token {s['prompt_tokens']} 入 / {s['completion_tokens']} 出"
+        )
+        if total is not None:
+            text += f"｜总耗时 {total:.1f}s"
+        return text
+
     def _write_jsonl(self, summary: dict):
         """把本轮汇总追加写成一行 JSON（JSONL：一行一条记录）。"""
         self.log_path = Path(self.log_path)
