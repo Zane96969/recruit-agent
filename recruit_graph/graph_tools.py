@@ -15,6 +15,9 @@ load_dotenv()
 API_KEY = os.getenv("API_KEY")
 BASE_URL = os.getenv("BASE_URL", "https://api.deepseek.com")
 MODEL = os.getenv("MODEL", "deepseek-chat")
+# 检索相关性阈值：rerank 分数低于它的块直接挡掉（第一层过滤）。
+# 依据 8 个简历的分数分布：完全不相关的最高 0.055，正样本期望岗位最低 0.138。
+SCORE_THRESHOLD = 0.1
 
 
 @tool
@@ -41,7 +44,9 @@ class JobList(BaseModel):
     # 下面三个字段 JD 里可能没写。注意「声明类型」与「默认值」必须对得上：
     # 声明成 list/str 却给 None 会让 pydantic 报校验错误，缺省值要和类型一致。
     requirements: str = Field(description="岗位要求，没有就填空字符串", default="")
-    tech_stack: TechStack | None = Field(description="技术栈，没有就给 null", default=None)
+    tech_stack: TechStack | None = Field(
+        description="技术栈，没有就给 null", default=None
+    )
 
 
 chat_model = ChatOpenAI(
@@ -197,9 +202,25 @@ def match_jd_worker(state: Annotated[list, InjectedState("messages")]) -> str:
     tool_messages = [m for m in state if m.__class__.__name__ == "ToolMessage"]
     profile_json = tool_messages[-1].content if tool_messages else ""
 
-    # 用画像去向量库检索最相关的 JD
-    jd_docs = hybrid_search(profile_json)
-    jd_text = "\n---\n".join(doc.page_content for doc in jd_docs)
+    # 第一层：用画像检索 JD，加 rerank 相关性阈值，挡掉完全不相关的块
+    jd_docs = hybrid_search(profile_json, score_threshold=SCORE_THRESHOLD)
+    candidate_jd_ids = []
+    for doc in jd_docs:
+        jid = doc.metadata["jd_id"]
+        if jid not in candidate_jd_ids:
+            candidate_jd_ids.append(jid)
+
+    # 第二层：LLM 裁判过滤"表面相似但实质不匹配"（如候选人明确拒绝销售外呼）
+    from recruit_graph.jd_store import get_jd
+    from recruit_graph.relevance_filter import filter_relevant_jd_ids
+
+    relevant_jd_ids = filter_relevant_jd_ids(profile_json, candidate_jd_ids)
+
+    # 两层后没有真正相关的岗位：明确返回无匹配，不再硬塞
+    if not relevant_jd_ids:
+        return "经检索与相关性判断，该候选人与岗位库中的所有岗位均不匹配（无匹配）。"
+
+    jd_text = "\n---\n".join(get_jd(jid)["jd_text"] for jid in relevant_jd_ids)
 
     answer = chat_model.invoke(
         [
@@ -281,9 +302,25 @@ def analyze_and_match_resume(resume_text: str) -> str:
     # 第一步：复用简历分析专家，得到画像 JSON
     profile_json = analyze_resume_worker.invoke({"resume_text": resume_text})
 
-    # 第二步：拿画像去向量库检索相关 JD
-    jd_docs = hybrid_search(profile_json)
-    jd_text = "\n---\n".join(doc.page_content for doc in jd_docs)
+    # 第二步（第一层）：拿画像检索 JD，加 rerank 相关性阈值
+    jd_docs = hybrid_search(profile_json, score_threshold=SCORE_THRESHOLD)
+    candidate_jd_ids = []
+    for doc in jd_docs:
+        jid = doc.metadata["jd_id"]
+        if jid not in candidate_jd_ids:
+            candidate_jd_ids.append(jid)
+
+    # 第二层：LLM 裁判过滤"表面相似但实质不匹配"
+    from recruit_graph.jd_store import get_jd
+    from recruit_graph.relevance_filter import filter_relevant_jd_ids
+
+    relevant_jd_ids = filter_relevant_jd_ids(profile_json, candidate_jd_ids)
+
+    # 两层后没有真正相关的岗位：明确无匹配
+    if not relevant_jd_ids:
+        return f"【候选人画像】\n{profile_json}\n\n该候选人与岗位库中的所有岗位均不匹配（无匹配）。"
+
+    jd_text = "\n---\n".join(get_jd(jid)["jd_text"] for jid in relevant_jd_ids)
 
     # 第三步：匹配专家对照画像与 JD 出报告
     answer = chat_model.invoke(

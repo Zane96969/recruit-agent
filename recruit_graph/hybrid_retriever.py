@@ -120,7 +120,7 @@ def hybrid_retrieve(query: str, top_n: int = 5):
 
 
 def rerank_candidates(query: str, candidates, top_k: int = 3):
-    """用 bge-reranker 对粗排候选精排，返回 [(块id, 文本), ...]，长度 top_k。"""
+    """用 bge-reranker 对粗排候选精排，返回 [(块id, 文本, 相关性分数), ...]，长度 top_k。"""
     # 第一组：把候选里的文本抽成列表（rerank 接口只认文本，不认我们的块 id）
     documents = [doc for _, doc in candidates]
 
@@ -147,8 +147,12 @@ def rerank_candidates(query: str, candidates, top_k: int = 3):
     results = resp.json()["results"]
 
     # 第三组：results 已按相关度从高到低排好，每项 item["index"] 是"它在你传入 documents 里的局部位置"
-    # 用这个局部位置去 candidates 里取，才能把 (块id, 文本) 拿回来
-    return [candidates[item["index"]] for item in results]
+    # 用这个局部位置去 candidates 里取，把 (块id, 文本) 连同 relevance_score 一起带回。
+    ranked = []
+    for item in results:
+        cid, text = candidates[item["index"]]
+        ranked.append((cid, text, item["relevance_score"]))
+    return ranked
 
 
 def hybrid_search(
@@ -156,11 +160,14 @@ def hybrid_search(
     candidate_n: int = 8,
     top_k: int = 3,
     use_rerank: bool = True,
+    score_threshold: float | None = None,
 ):
     """混合检索总入口：BM25+向量 RRF 粗排 → bge-reranker 精排。
     返回 LangChain Document 列表（与 retriever.invoke 同类型）。
     use_rerank=True（默认）：粗排后再精排，结果最准、但多调一次模型、稍慢；
-    use_rerank=False：只做 BM25+向量粗排，更快、且不依赖精排服务。"""
+    use_rerank=False：只做 BM25+向量粗排，更快、且不依赖精排服务。
+    score_threshold（相关性阈值，默认 None）：精排后只保留分数 >= 阈值的块，
+      用来挡掉"完全不相关"的候选；粗排/降级路径没有分数，不参与过滤。"""
     # 第一组：粗排，多捞一些候选（candidate_n 个）
     candidates = hybrid_retrieve(query, top_n=candidate_n)
     if not candidates:  # 空库：直接返回空列表，让上层给出"请先录入岗位"的提示
@@ -172,23 +179,33 @@ def hybrid_search(
         try:
             ranked = rerank_candidates(query, candidates, top_k=top_k)
         except Exception as e:  # noqa: BLE001
-            print(f"[降级] rerank 精排失败（{type(e).__name__}），退回 BM25+向量粗排结果")
-            ranked = candidates[:top_k]
+            print(
+                f"[降级] rerank 精排失败（{type(e).__name__}），退回 BM25+向量粗排结果"
+            )
+            ranked = [(cid, text, None) for cid, text in candidates[:top_k]]
     else:
         # 只要粗排：直接取 RRF 融合后的前 top_k，省掉一次模型调用，更快。
-        ranked = candidates[:top_k]
+        ranked = [(cid, text, None) for cid, text in candidates[:top_k]]
 
-    # 第三组：把每个 (块id, 文本) 包成 Document 盒子，返回类型和 retriever.invoke 一致。
-    # metadata 里带上 jd_id / jd_name：调用方（问答出处、JD 生成范例、深度研究引用）
-    # 直接读字段即可，不必再去解析 "jd3_5" 这种内部编号 —— 那是向量层的实现细节。
+    # 第三组：相关性阈值过滤。分数为 None（粗排/降级）的保留——
+    # 没有裁判分数时不能据此拒答，避免把降级结果全清空。
+    if score_threshold is not None:
+        ranked = [
+            item for item in ranked if item[2] is None or item[2] >= score_threshold
+        ]
+
+    # 第四组：把每个 (块id, 文本, 分数) 包成 Document 盒子，返回类型和 retriever.invoke 一致。
+    # metadata 里带上 jd_id / jd_name / relevance_score：调用方（问答出处、JD 生成范例、
+    # 深度研究引用、拒答判断）直接读字段即可，不必再去解析 "jd3_5" 这种内部编号。
     snapshot = _snapshot()
     documents = []
-    for cid, text in ranked:
+    for cid, text, score in ranked:
         meta = snapshot["meta"].get(cid) or {}
         metadata = {
             "id": cid,
             "jd_id": meta.get("jd_id"),
             "jd_name": meta.get("jd_name", ""),
+            "relevance_score": score,
         }
         documents.append(Document(page_content=text, metadata=metadata))
     return documents

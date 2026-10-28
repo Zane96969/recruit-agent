@@ -1,0 +1,58 @@
+[
+  {
+    "case_id": 1,
+    "resume_file": "resume_01_ai_strong.txt",
+    "expected_jd_id": 1,
+    "expected_jd_name": "AI Agent 开发工程师（校招 / 实习可转正）",
+    "case_type": "positive"
+  },
+  {
+    "case_id": 2,
+    "resume_file": "resume_02_ai_mid.txt",
+    "expected_jd_id": 1,
+    "expected_jd_name": "AI Agent 开发工程师（校招 / 实习可转正）",
+    "case_type": "positive"
+  },
+  {
+    "case_id": 3,
+    "resume_file": "resume_03_data.txt",
+    "expected_jd_id": null,
+    "expected_jd_name": null,
+    "case_type": "negative"
+  },
+  {
+    "case_id": 4,
+    "resume_file": "resume_04_java_strong.txt",
+    "expected_jd_id": 2,
+    "expected_jd_name": "Java 后端开发工程师",
+    "case_type": "positive"
+  },
+  {
+    "case_id": 5,
+    "resume_file": "resume_05_java_mid.txt",
+    "expected_jd_id": 2,
+    "expected_jd_name": "Java 后端开发工程师",
+    "case_type": "positive"
+  },
+  {
+    "case_id": 6,
+    "resume_file": "resume_06_recruiter_strong.txt",
+    "expected_jd_id": 3,
+    "expected_jd_name": "猎头顾问 / 招聘专员",
+    "case_type": "positive"
+  },
+  {
+    "case_id": 7,
+    "resume_file": "resume_07_hr_mid.txt",
+    "expected_jd_id": 3,
+    "expected_jd_name": "猎头顾问 / 招聘专员",
+    "case_type": "positive"
+  },
+  {
+    "case_id": 8,
+    "resume_file": "resume_08_other.txt",
+    "expected_jd_id": null,
+    "expected_jd_name": null,
+    "case_type": "negative"
+  }
+]
