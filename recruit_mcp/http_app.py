@@ -34,7 +34,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 # 必须在 import recruit_server / recruit_graph 之前载入根目录 .env
 load_dotenv(REPO_ROOT / ".env")
 
-# 复用 recruit_server 里已经注册好 8 个工具的 FastMCP 实例
+# 复用 recruit_server 里已经注册好 10 个工具的 FastMCP 实例
 from recruit_server import server  # noqa: E402
 from recruit_graph.candidate_store import (  # noqa: E402
     analyze_profile,

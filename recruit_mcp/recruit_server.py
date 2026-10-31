@@ -3,8 +3,10 @@
 把 recruit_graph 里的真实招聘能力按 MCP 标准暴露成工具，任何 MCP 客户端
 （Claude Desktop / 本项目的 Agent / 命令行）一次握手即可发现并调用：
 
-- 岗位库（只读）：
+- 岗位库（读）：
   list_positions / get_position / search_jd_knowledge
+- 岗位库管理（写 SQLite + 向量库，带跨存储一致性与长度上限防护）：
+  save_position / delete_position
 - 简历分析（只读，不写库）：
   analyze_resume / match_resume_with_jd
 - 业务闭环（写 SQLite）：
@@ -45,7 +47,12 @@ from recruit_graph.graph_tools import (  # noqa: E402
     match_resume_by_jd,
 )
 from recruit_graph.hybrid_retriever import hybrid_search  # noqa: E402
-from recruit_graph.jd_store import get_jd, list_jds  # noqa: E402
+from recruit_graph.jd_store import (  # noqa: E402
+    delete_jd,
+    get_jd,
+    list_jds,
+    save_jd,
+)
 
 server = FastMCP("recruit_server")
 
@@ -96,6 +103,39 @@ def search_jd_knowledge(
         ]
     except Exception as e:  # BM25/向量/rerank 任一步网络失败，都降级为错误片段
         return [{"error": "知识库检索失败", "detail": str(e)}]
+
+
+# ===================== 岗位库管理（写 SQLite + 向量库） =====================
+@server.tool()
+def save_position(jd_name: str, jd_text: str) -> dict:
+    """录入或更新一份岗位 JD：写 SQLite 并切块向量化入向量库。
+    同内容 JD 重复保存是幂等更新（按内容哈希去重），重复调用无副作用。
+    当用户要“把这个岗位录入岗位库 / 更新某岗位的 JD”时使用，会写数据库。
+    :param jd_name: 岗位名称，如“AI Agent 开发实习生”
+    :param jd_text: JD 原文（上限 20000 字符，超长会被拒绝）
+    """
+    try:
+        return save_jd(jd_name, jd_text)
+    except ValueError as e:
+        # 输入用法错（如超长）：重试也没用，返回结构化错误让调用方改输入
+        return {"error": f"岗位「{jd_name}」未保存", "detail": str(e)}
+    except RuntimeError as e:
+        # 系统故障（向量库写入失败，SQLite 已回滚保护）：可重试
+        return {"error": f"岗位「{jd_name}」保存失败，可重试", "detail": str(e)}
+
+
+@server.tool()
+def delete_position(jd_id: int) -> dict:
+    """按岗位编号删除一份岗位（SQLite 记录 + 全部向量块），不可恢复。
+    当用户明确要求“删掉这个岗位”时使用，会写数据库。
+    :param jd_id: 岗位编号，来自 list_positions 返回的 id
+    """
+    try:
+        deleted = delete_jd(jd_id)
+        return {"jd_id": jd_id, "deleted": deleted}
+    except RuntimeError as e:
+        # 向量清理失败时岗位保留在库里（跨存储一致性保护），可重试
+        return {"error": f"岗位 {jd_id} 删除失败，岗位已保留，可重试", "detail": str(e)}
 
 
 # ===================== 简历分析（只读，不写库） =====================
