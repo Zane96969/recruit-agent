@@ -89,30 +89,56 @@ def bm25_search(query: str, top_n: int = 5):
 
 
 def hybrid_retrieve(query: str, top_n: int = 5):
-    """向量 + BM25 经 RRF 融合，返回粗排后的若干块，每项 (块id, 文本)。"""
+    """向量 + BM25 经 RRF 融合，返回粗排后的若干块，每项 (块id, 文本)。
+
+    单路故障隔离：BM25 路和向量路各自 try/except，任一路抛异常
+    （最常见是远程 embedding 服务超时/不可用）就只用另一路的结果，
+    两路都失败才返回空列表，不让一次外部服务故障把整个检索带崩。
+    """
+    # 边界输入防御：0 会让切片悄悄返回空，负数会静默切掉尾部，统一钳到 >= 1
+    top_n = max(1, top_n)
     snapshot = _snapshot()
     ids = snapshot["ids"]
     if not ids:  # 空库直接返回，别去查 Chroma（n_results 不能为 0）
         return []
 
-    # 第一组：BM25 路——拿到所有块按关键词排好的 id 顺序
-    bm25_ranked_ids = [cid for cid, _ in bm25_search(query, top_n=len(ids))]
+    # 第一组：BM25 路——本地内存计算，单独 try/except，挂了留空列表
+    try:
+        bm25_ranked_ids = [
+            cid for cid, _ in bm25_search(query, top_n=len(ids))
+        ]
+    except Exception as e:  # noqa: BLE001
+        print(
+            f"[降级] BM25 关键词路失败（{type(e).__name__}），只用向量语义路"
+        )
+        bm25_ranked_ids = []
 
-    # 第二组：向量路——语义召回，拿到按相似度排好的 id 顺序
-    query_embedding = embeddings.embed_query(query)
-    vec_result = vectorstore._collection.query(
-        query_embeddings=[query_embedding],
-        n_results=len(ids),
-    )
-    vector_ranked_ids = vec_result["ids"][0]
+    # 第二组：向量路——远程 embedding + Chroma，单独 try/except，挂了留空列表
+    try:
+        query_embedding = embeddings.embed_query(query)
+        vec_result = vectorstore._collection.query(
+            query_embeddings=[query_embedding],
+            n_results=len(ids),
+        )
+        vector_ranked_ids = vec_result["ids"][0]
+    except Exception as e:  # noqa: BLE001
+        print(
+            f"[降级] 向量语义路失败（{type(e).__name__}），只用 BM25 关键词路"
+        )
+        vector_ranked_ids = []
+
+    # 两路都失败：返回空，让上层走"无结果/请稍后再试"提示，而不是崩
+    if not bm25_ranked_ids and not vector_ranked_ids:
+        return []
 
     # 第三组：RRF —— 每个 id 先记 0 分，再按它在两路里的名次各加 1/(常数+名次)。
-    # 名次从 1 开始（标准 RRF 公式），常数 60 用来压平"第一名与第二名"的差距。
+    # 单路成功时另一路贡献 0 分、排序仍正确；名次从 1 开始，常数 60 压平前两名差距。
     rrf_scores = {cid: 0.0 for cid in ids}
     for rank, cid in enumerate(bm25_ranked_ids, start=1):
         rrf_scores[cid] += 1 / (RRF_K + rank)
     for rank, cid in enumerate(vector_ranked_ids, start=1):
-        rrf_scores[cid] += 1 / (RRF_K + rank)
+        if cid in rrf_scores:  # 防止意外 id 触发 KeyError
+            rrf_scores[cid] += 1 / (RRF_K + rank)
 
     # 第四组：按融合分降序，取前 top_n 个 id，再用字典换回文本
     fused_ids = sorted(ids, key=lambda cid: rrf_scores[cid], reverse=True)
@@ -168,6 +194,9 @@ def hybrid_search(
     use_rerank=False：只做 BM25+向量粗排，更快、且不依赖精排服务。
     score_threshold（相关性阈值，默认 None）：精排后只保留分数 >= 阈值的块，
       用来挡掉"完全不相关"的候选；粗排/降级路径没有分数，不参与过滤。"""
+    # 边界输入防御：top_k 传 0/负数时切片行为诡异（空结果或切掉尾部），钳到 >= 1。
+    # candidate_n 不用重复钳：它会作为 top_n 传进 hybrid_retrieve，那边已钳。
+    top_k = max(1, top_k)
     # 第一组：粗排，多捞一些候选（candidate_n 个）
     candidates = hybrid_retrieve(query, top_n=candidate_n)
     if not candidates:  # 空库：直接返回空列表，让上层给出"请先录入岗位"的提示

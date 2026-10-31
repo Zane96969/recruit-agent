@@ -35,18 +35,25 @@ def _jd_id_from_label(label: str) -> int:
 
 
 def save_handler(jd_name: str, jd_text: str):
-    """保存 JD，刷新下拉。"""
+    """保存 JD，刷新下拉；底层失败转成界面消息，不把 traceback 甩给使用者。"""
     if not jd_name.strip() or not jd_text.strip():
         return gr.update(choices=_refresh_choices()), "请填岗位名和 JD 原文"
-    save_jd(jd_name.strip(), jd_text.strip())
+    try:
+        save_jd(jd_name.strip(), jd_text.strip())
+    except (ValueError, RuntimeError) as e:
+        # ValueError=输入用法错（如超长），RuntimeError=系统故障（可重试），都只显示消息
+        return gr.update(choices=_refresh_choices()), f"未保存：{e}"
     return gr.update(choices=_refresh_choices()), "已保存：" + jd_name.strip()
 
 
 def delete_handler(jd_label: str):
-    """删除选中的 JD，刷新下拉。"""
+    """删除选中的 JD，刷新下拉；底层失败转成界面消息。"""
     if not jd_label:
         return gr.update(choices=_refresh_choices()), "请先选择要删除的 JD"
-    ok = delete_jd(_jd_id_from_label(jd_label))
+    try:
+        ok = delete_jd(_jd_id_from_label(jd_label))
+    except (ValueError, RuntimeError) as e:
+        return gr.update(choices=_refresh_choices()), f"未删除：{e}"
     msg = "已删除：" + jd_label if ok else "删除失败"
     return gr.update(choices=_refresh_choices()), msg
 

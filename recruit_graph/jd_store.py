@@ -20,19 +20,40 @@ _CREATE_JD_TABLE = """
     )
 """
 
+# JD 原文长度上限：超长 JD 会切出成百上千个向量块，
+# 一次保存就是一轮巨额 embedding 调用，必须在入口拒绝。
+MAX_JD_CHARS = 20000
+
+
+def _check_jd_text(jd_text: str) -> None:
+    """JD 原文的边界校验：超长直接拒绝（输入用法错误，用 ValueError）。"""
+    if len(jd_text) > MAX_JD_CHARS:
+        raise ValueError(
+            f"JD 原文过长（{len(jd_text)} 字符，上限 {MAX_JD_CHARS}），请精简后重试"
+        )
+
 
 def save_jd(jd_name: str, jd_text: str) -> dict:
-    """保存一份 JD；同一份原文重复保存会 UPDATE（保持原 id，评分记录不悬空）。"""
+    """保存一份 JD；同一份原文重复保存会 UPDATE（保持原 id，评分记录不悬空）。
+
+    跨存储一致性：SQLite 的 INSERT/UPDATE 先执行但不 commit，
+    把高风险的向量重建（含远程 embedding）放进事务保护期内，
+    向量全部写成功才 commit。任一步失败：rollback 回到操作前状态，
+    并补偿向量库（重存场景用旧文重建、新增场景清掉孤儿块），再抛可读错误。
+    """
+    _check_jd_text(jd_text)
     content_hash = hashlib.md5(jd_text.strip().encode("utf-8")).hexdigest()
     conn = _connect()
-
+    jd_id = None
+    old_row = None
     try:
         conn.execute(_CREATE_JD_TABLE)
-        row = conn.execute(
-            "SELECT id FROM jds WHERE content_hash = ?", (content_hash,)
+        old_row = conn.execute(
+            "SELECT id, jd_name, jd_text FROM jds WHERE content_hash = ?",
+            (content_hash,),
         ).fetchone()
-        if row:
-            jd_id = row["id"]
+        if old_row:
+            jd_id = old_row["id"]
             conn.execute(
                 """
                 UPDATE jds SET jd_name = ?, jd_text = ?, created_at = ?
@@ -42,7 +63,7 @@ def save_jd(jd_name: str, jd_text: str) -> dict:
                     jd_name,
                     jd_text,
                     datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    row["id"],
+                    old_row["id"],
                 ),
             )
         else:
@@ -59,12 +80,26 @@ def save_jd(jd_name: str, jd_text: str) -> dict:
                 ),
             )
             jd_id = cur.lastrowid
+        delete_jd_vectors(jd_id)
+        upsert_jd(jd_id, jd_name, jd_text)
         conn.commit()
+    except Exception as e:
+        conn.rollback()
+        try:
+            if old_row:
+                # 重存场景：用操作前的旧文把向量块补回去
+                upsert_jd(jd_id, old_row["jd_name"], old_row["jd_text"])
+            else:
+                # 新增场景：清掉可能残留的孤儿块
+                delete_jd_vectors(jd_id)
+        except Exception:
+            pass  # 补偿也失败：错误信息里说明重试可自愈
+        raise RuntimeError(
+            f"岗位「{jd_name}」保存失败：向量库写入出错，"
+            "数据库已回滚未落库，可直接重试"
+        ) from e
     finally:
         conn.close()
-
-    delete_jd_vectors(jd_id)
-    upsert_jd(jd_id, jd_name, jd_text)
     return {"jd_name": jd_name, "content_hash": content_hash, "jd_id": jd_id}
 
 
@@ -74,17 +109,23 @@ def update_jd(jd_id: int, jd_name: str, jd_text: str) -> dict:
     - 正文没变、只改名：只更新 SQLite 名字与向量块 metadata，不重新向量化（快）。
     - 正文有改动：更新原文后删除旧向量块、按新文本切块重建；
       若新原文与别的岗位完全相同（会撞唯一约束），提前返回 error 不改任何东西。
+
+    跨存储一致性：SQLite 更新先执行但不 commit，向量重建放进事务保护期内，
+    全部成功才 commit；失败则 rollback 回旧内容，并尝试用旧文重建向量块。
     """
+    _check_jd_text(jd_text)
     content_hash = hashlib.md5(jd_text.strip().encode("utf-8")).hexdigest()
     conn = _connect()
+    old_row = None
+    need_rebuild = False
     try:
         conn.execute(_CREATE_JD_TABLE)
-        row = conn.execute(
-            "SELECT content_hash FROM jds WHERE id = ?", (jd_id,)
+        old_row = conn.execute(
+            "SELECT * FROM jds WHERE id = ?", (jd_id,)
         ).fetchone()
-        if not row:
+        if not old_row:
             return {"error": f"岗位 #{jd_id} 不存在，无法更新"}
-        content_changed = row["content_hash"] != content_hash
+        content_changed = old_row["content_hash"] != content_hash
         if content_changed:
             # 新内容若与“别的”岗位完全相同，会撞 content_hash 唯一约束，提前拦下
             dup = conn.execute(
@@ -99,17 +140,27 @@ def update_jd(jd_id: int, jd_name: str, jd_text: str) -> dict:
                 "UPDATE jds SET jd_name = ?, jd_text = ?, content_hash = ? WHERE id = ?",
                 (jd_name, jd_text, content_hash, jd_id),
             )
+            need_rebuild = True
+            delete_jd_vectors(jd_id)
+            upsert_jd(jd_id, jd_name, jd_text)
         else:
             conn.execute("UPDATE jds SET jd_name = ? WHERE id = ?", (jd_name, jd_id))
+            rename_jd_vectors(jd_id, jd_name)
         conn.commit()
+    except Exception as e:
+        conn.rollback()
+        if need_rebuild:
+            try:
+                # 补偿：用操作前的旧文把向量块补回去（恢复到更新前状态）
+                upsert_jd(jd_id, old_row["jd_name"], old_row["jd_text"])
+            except Exception:
+                pass  # 补偿也失败：错误信息里说明重存可自愈
+        raise RuntimeError(
+            f"岗位 #{jd_id} 更新失败：向量库写入出错，"
+            "数据库已回滚到原内容；若检索不到该岗位，重新保存一次即可修复"
+        ) from e
     finally:
         conn.close()
-
-    if content_changed:
-        delete_jd_vectors(jd_id)
-        upsert_jd(jd_id, jd_name, jd_text)
-    else:
-        rename_jd_vectors(jd_id, jd_name)
     return {"jd_id": jd_id, "jd_name": jd_name, "content_hash": content_hash}
 
 
@@ -139,18 +190,26 @@ def get_jd(jd_id: int) -> dict:
 
 
 def delete_jd(jd_id: int) -> bool:
-    """按 id 删除一份 JD，返回是否真的删掉了一行。"""
+    """按 id 删除一份 JD，返回是否真的删掉了一行。
+
+    跨存储一致性：先删 SQLite 行（不 commit），向量清理成功后才 commit；
+    向量清理失败则 rollback，岗位完整保留，可直接重试。
+    """
     conn = _connect()
     try:
         conn.execute(_CREATE_JD_TABLE)
         cur = conn.execute("DELETE FROM jds WHERE id = ?", (jd_id,))
-        conn.commit()
         deleted = cur.rowcount > 0
+        if deleted:
+            delete_jd_vectors(jd_id)
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        raise RuntimeError(
+            f"岗位 #{jd_id} 删除失败：向量库清理出错，岗位已保留，可重试"
+        ) from e
     finally:
         conn.close()
-
-    if deleted:
-        delete_jd_vectors(jd_id)
     return deleted
 
 

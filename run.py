@@ -53,6 +53,14 @@ DEFAULT_ENTRY = "workbench"
 # 判断"这个解释器能不能跑本项目"的最小依赖集合
 PROBE = "import gradio, langchain, chromadb, jieba"
 
+# 配置自检：用准备好的解释器加载 .env 并查必需配置，缺了返回非 0。
+# 放在子进程里跑，是因为 .env 的加载和 recruit_graph 包都要靠它。
+KEY_PROBE = (
+    "from dotenv import load_dotenv; load_dotenv(); "
+    "from recruit_graph.config_check import missing_keys; "
+    "import sys; sys.exit(1 if missing_keys() else 0)"
+)
+
 
 def print_entries(ready_python: Path | None = None) -> None:
     print("可用入口（python run.py <名字>）：")
@@ -207,6 +215,20 @@ def main() -> int:
             "  2) 机器上已有别的能跑的环境，直接借用：\n"
             "     python run.py --python <那个环境>\\Scripts\\python.exe\n"
             "     （或设环境变量 RECRUIT_PYTHON=...）\n"
+        )
+        return 1
+
+    # 配置自检：把"启动后才在深处炸掉"的配置问题，提前到启动这一刻。
+    # 只拦"缺 key 就完全跑不起来"的情况，不拦"key 无效"（那要真调一次才知道）。
+    key_probe = subprocess.run(
+        [str(python), "-c", KEY_PROBE], capture_output=True, cwd=ROOT
+    )
+    if key_probe.returncode != 0:
+        print(
+            "\n配置自检没过：缺少 API_KEY。\n"
+            "模型与向量服务都离不开它。请在项目根目录的 .env 文件里补一行：\n"
+            "  API_KEY=你的密钥\n"
+            "（.env 不存在就新建一个；密钥参考 README 里的获取方式）"
         )
         return 1
 

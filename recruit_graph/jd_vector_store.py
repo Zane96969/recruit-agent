@@ -13,6 +13,10 @@ embeddings = OpenAIEmbeddings(
     base_url=BASE_URL,
     model="BAAI/bge-large-zh-v1.5",
     check_embedding_ctx_length=False,
+    # 显式超时/重试：embedding 是远程调用，不能靠底层默认值，
+    # 单次 30 秒上限、瞬时故障自动重试 3 次，和聊天模型同一套防护口径。
+    timeout=30,
+    max_retries=3,
 )
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -40,9 +44,25 @@ def _bump_version() -> None:
     _index_version += 1
 
 
+# 单块字符上限：bge 模型有 token 上限，无句号的整段长文若不切，
+# 会退化成一个巨型块——超限部分被截断、语义检索整体失真。
+MAX_CHUNK_CHARS = 300
+
+
 def split_sentences(text):
-    """按句号切成句子列表：补回句号、滤掉空白块。"""
-    return [s.strip() + "。" for s in text.split("。") if s.strip()]
+    """按句号切成句子列表：补回句号、滤掉空白块。
+
+    兜底：单句超过 MAX_CHUNK_CHARS（典型是无句号的整段粘贴文本）时
+    再按长度硬切，保证每块都不超出 embedding 的处理能力。
+    """
+    sentences = [s.strip() + "。" for s in text.split("。") if s.strip()]
+    chunks = []
+    for sent in sentences:
+        while len(sent) > MAX_CHUNK_CHARS:
+            chunks.append(sent[:MAX_CHUNK_CHARS])
+            sent = sent[MAX_CHUNK_CHARS:]
+        chunks.append(sent)
+    return chunks
 
 
 def upsert_jd(jd_id: int, jd_name: str, jd_text: str) -> int:
