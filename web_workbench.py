@@ -41,11 +41,13 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from recruit_graph.benchmark_analysis import run_benchmark
 from recruit_graph.candidate_store import (
     analyze_profile,
     delete_candidate,
     list_candidates,
     save_candidate_from_profile,
+    score_profile,
 )
 from recruit_graph.deep_research import run_deep_research
 from recruit_graph.doc_parser import extract_text
@@ -362,6 +364,24 @@ def r_analyze(text: str):
     )
 
 
+def r_score(profile_json: str):
+    """只匹配打分、不入库：先看分数和点评，再决定要不要点确认入库。"""
+    try:
+        profile = json.loads(profile_json)
+    except Exception:  # noqa: BLE001
+        return "请先点「② 分析画像」生成画像，再点「③ 匹配打分」"
+    try:
+        match = score_profile(profile)
+    except Exception as e:  # noqa: BLE001
+        return f"匹配打分失败：{e}"
+    return (
+        f"匹配岗位：{match['matched_job']}\n"
+        f"匹配分数：{match['match_score']} 分\n"
+        f"点评：{match['report']}\n\n"
+        "（当前还没入库，分数满意再点「④ 确认入库」；不满意可改画像重新打分，或直接丢弃）"
+    )
+
+
 def r_save(profile_json: str, text: str):
     """确认入库：保留前面所有人，清空输入框，刷新计数与排名。"""
     if not (text or "").strip():
@@ -516,6 +536,25 @@ async def deep_research_ask(question: str):
     return report, result["trace"], handler.metrics_text(total)
 
 
+# ===================== Tab 5：对标分析 =====================
+def benchmark_run(labels):
+    """对选中的多份同类 JD 跑对标分析，返回 (人话报告, 结构化 JSON)。"""
+    if not labels:
+        return "请先勾选要对标的岗位（建议选同方向的一批）", ""
+    ids = []
+    for label in labels:
+        jid = cid_from_label(label)
+        if jid is not None:
+            ids.append(jid)
+    if not ids:
+        return "选中的选项没有有效岗位编号，请点「刷新岗位列表」后重试", ""
+    try:
+        report, result = run_benchmark(jd_ids=ids)
+    except Exception as e:  # noqa: BLE001
+        return f"对标分析失败：{type(e).__name__}（{e}）", ""
+    return report, json.dumps(result, ensure_ascii=False, indent=2)
+
+
 # ===================== 界面 =====================
 CUSTOM_CSS = """
 .gradio-container {max-width: 1240px !important;}
@@ -651,11 +690,12 @@ with gr.Blocks(title="招聘智能体工作台") as demo:
     gr.HTML("""
         <div class="app-header">
           <div class="app-title">招聘智能体工作台</div>
-          <div class="app-sub">岗位知识库 · 简历智能初筛 · 混合检索问答</div>
+          <div class="app-sub">岗位知识库 · 简历智能初筛 · 混合检索问答 · 对标分析</div>
           <div class="app-tags">
             <span>岗位 JD 管理</span>
             <span>简历逐份初筛与排名</span>
             <span>知识库问答</span>
+            <span>同类岗位对标分析</span>
           </div>
         </div>
         """)
@@ -673,50 +713,72 @@ with gr.Blocks(title="招聘智能体工作台") as demo:
                 max_height=230,
                 show_label=False,
             )
-        gr.Markdown("#### 录入 / 修改岗位", elem_classes="section-title")
-        with gr.Row(elem_classes="card"):
-            with gr.Column():
-                jd_file = gr.File(
-                    label="上传岗位文件（PDF / Word / 图片）",
-                    file_types=FILE_TYPES,
-                    type="filepath",
-                )
-                jd_image = gr.Image(
-                    label="或者：点一下这里，再按 Ctrl+V 粘贴岗位截图",
-                    type="filepath",
-                    format="png",
-                    sources=["upload", "clipboard"],
-                    height=200,
-                )
-            with gr.Column():
-                jd_name_box = gr.Textbox(label="岗位名（留空则自动取首行）", lines=1)
-                jd_extract_btn = gr.Button("① 从文件提取文本", size="lg")
-                jd_save_btn = gr.Button("② 保存新岗位", variant="primary", size="lg")
         gr.Markdown(
-            "#### AI 生成 JD 草稿（不联网，参考知识库相似岗位）",
+            "#### 第一步：准备岗位内容（下面两种方式二选一，内容都会填到第二步）",
             elem_classes="section-title",
         )
-        with gr.Row(elem_classes="card"):
-            jd_gen_box = gr.Textbox(
-                label="岗位名称",
-                placeholder="例如：AI Agent 开发工程师",
-                lines=1,
-                scale=3,
+        with gr.Accordion(
+            "方式一：手动录入（上传文件 / 粘贴截图）", open=True
+        ):
+            with gr.Row(elem_classes="card"):
+                with gr.Column():
+                    jd_file = gr.File(
+                        label="上传岗位文件（PDF / Word / 图片）",
+                        file_types=FILE_TYPES,
+                        type="filepath",
+                    )
+                    jd_image = gr.Image(
+                        label="或者：点一下这里，再按 Ctrl+V 粘贴岗位截图",
+                        type="filepath",
+                        format="png",
+                        sources=["upload", "clipboard"],
+                        height=200,
+                    )
+                with gr.Column():
+                    gr.Markdown(
+                        "选好文件后点下面按钮，提取出的文字会填到**第二步**的"
+                        "「岗位原文」框，可在那里核对修改。"
+                    )
+                    jd_extract_btn = gr.Button("① 从文件提取文本", size="lg")
+        with gr.Accordion(
+            "方式二：AI 生成草稿（不联网，参考知识库相似岗位）", open=False
+        ):
+            with gr.Row(elem_classes="card"):
+                with gr.Column():
+                    jd_gen_box = gr.Textbox(
+                        label="想生成什么岗位（这里只填岗位名，不是保存用的岗位名）",
+                        placeholder="例如：AI Agent 开发工程师",
+                        lines=1,
+                    )
+                    jd_req_box = gr.Textbox(
+                        label="客户给的要求（选填，会优先采纳，越具体越好）",
+                        placeholder=(
+                            "例如：base上海；本科及以上、5年以上；薪资30-45K·15薪；"
+                            "必须做过 Agent / RAG；招聘2人，向算法负责人汇报；金融行业背景优先"
+                        ),
+                        lines=4,
+                    )
+                with gr.Column():
+                    gr.Markdown(
+                        "填好岗位名（可附客户要求）后点下面按钮，生成的草稿会填到"
+                        "**第二步**的「岗位原文」框，草稿不会自动入库。"
+                    )
+                    jd_gen_btn = gr.Button(
+                        "AI 生成草稿", variant="primary", size="lg"
+                    )
+        gr.Markdown("#### 第二步：核对并保存", elem_classes="section-title")
+        with gr.Group(elem_classes="card"):
+            jd_name_box = gr.Textbox(
+                label="岗位名（保存用，留空则自动取首行）", lines=1
             )
-            jd_gen_btn = gr.Button("AI 生成草稿", variant="primary", size="lg")
-        jd_req_box = gr.Textbox(
-            label="客户给的要求（选填，会优先采纳，越具体越好）",
-            placeholder=(
-                "例如：base上海；本科及以上、5年以上；薪资30-45K·15薪；"
-                "必须做过 Agent / RAG；招聘2人，向算法负责人汇报；金融行业背景优先"
-            ),
-            lines=4,
-        )
-        jd_text_box = gr.Textbox(
-            label="岗位原文（草稿会填到这里，补全“待确认”后保存；也可直接粘贴）",
-            lines=8,
-        )
-        jd_status = gr.Textbox(label="状态", interactive=False)
+            jd_text_box = gr.Textbox(
+                label="岗位原文（手动提取或 AI 生成都汇集到这里，也可直接编辑/粘贴）",
+                lines=10,
+            )
+            jd_save_btn = gr.Button(
+                "② 保存新岗位", variant="primary", size="lg"
+            )
+            jd_status = gr.Textbox(label="状态", interactive=False)
         gr.Markdown("#### 管理已有岗位", elem_classes="section-title")
         with gr.Row(elem_classes="card"):
             jd_dropdown = gr.Dropdown(
@@ -729,8 +791,8 @@ with gr.Blocks(title="招聘智能体工作台") as demo:
     with gr.Tab("简历初筛（逐份累积）"):
         gr.Markdown("#### 逐份初筛并自动累计排名", elem_classes="section-title")
         gr.Markdown(
-            "上传文件 / 直接 Ctrl+V 粘贴截图 → ①提取 → ②分析画像 → ③确认入库；"
-            "入库后自动清空、已入库的人全部保留，右侧实时排名。"
+            "上传文件 / 直接 Ctrl+V 粘贴截图 → ①提取 → ②分析画像 → ③匹配打分（不入库）"
+            " → ④确认入库；先看分数再决定，入库后自动清空、已入库的人全部保留，右侧实时排名。"
         )
         with gr.Row():
             with gr.Column(scale=1, elem_classes="card"):
@@ -753,8 +815,14 @@ with gr.Blocks(title="招聘智能体工作台") as demo:
                 r_analyze_btn = gr.Button("② 分析画像（不入库）", size="lg")
                 r_profile = gr.Textbox(label="画像 JSON（可编辑核对）", lines=10)
                 r_narrative = gr.Textbox(label="人才画像（自然语言，可编辑）", lines=8)
+                r_score_btn = gr.Button("③ 匹配打分（不入库，先看分数）", size="lg")
+                r_match = gr.Textbox(
+                    label="匹配结果（分数 / 岗位 / 点评，未入库）",
+                    lines=6,
+                    interactive=False,
+                )
                 r_save_btn = gr.Button(
-                    "③ 确认入库（保留前面所有人）", variant="primary", size="lg"
+                    "④ 确认入库（保留前面所有人）", variant="primary", size="lg"
                 )
                 r_status = gr.Textbox(label="结果", interactive=False, lines=5)
             with gr.Column(scale=1, elem_classes="card"):
@@ -808,6 +876,26 @@ with gr.Blocks(title="招聘智能体工作台") as demo:
             d_trace = gr.Textbox(label="过程轨迹（主管规划 / 派活 / 回报）", lines=10)
             d_metrics = gr.Textbox(label="运行指标（可观测）", lines=3)
 
+    with gr.Tab("对标分析"):
+        with gr.Column(elem_classes="card"):
+            gr.Markdown(
+                "#### 选一批同类 JD，反推高频技术与薪资行情",
+                elem_classes="section-title",
+            )
+            gr.Markdown(
+                "勾选同方向的岗位（可多选），数字由代码统计、模型只负责写报告。"
+            )
+            bm_pick = gr.Dropdown(
+                label="要对标的岗位（可多选）",
+                choices=jd_choices(),
+                multiselect=True,
+            )
+            with gr.Row():
+                bm_refresh_btn = gr.Button("刷新岗位列表", size="md")
+                bm_btn = gr.Button("开始对标分析", variant="primary", size="lg")
+            bm_report = gr.Textbox(label="对标分析报告", lines=16)
+            bm_json = gr.Textbox(label="结构化结果（JSON）", lines=12)
+
     # 事件绑定 —— 岗位
     jd_extract_btn.click(
         jd_extract,
@@ -845,6 +933,7 @@ with gr.Blocks(title="招聘智能体工作台") as demo:
     r_analyze_btn.click(
         r_analyze, inputs=r_text, outputs=[r_profile, r_narrative, r_status]
     )
+    r_score_btn.click(r_score, inputs=r_profile, outputs=r_match)
     r_save_btn.click(
         r_save,
         inputs=[r_profile, r_text],
@@ -878,6 +967,12 @@ with gr.Blocks(title="招聘智能体工作台") as demo:
 
     # 事件绑定 —— 深度研究（报告 + 过程轨迹 + 运行指标三个输出）
     d_btn.click(deep_research_ask, inputs=d_box, outputs=[d_report, d_trace, d_metrics])
+
+    # 事件绑定 —— 对标分析（报告 + 结构化 JSON 两个输出）
+    bm_btn.click(benchmark_run, inputs=bm_pick, outputs=[bm_report, bm_json])
+    bm_refresh_btn.click(
+        lambda: gr.update(choices=jd_choices()), outputs=bm_pick
+    )
 
     # 页面每次打开 / 刷新，都从库实时拉取最新岗位与候选人，避免显示旧快照
     demo.load(refresh_all, outputs=[jd_dropdown, jd_table, r_dropdown, r_count, r_rank])

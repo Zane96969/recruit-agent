@@ -15,6 +15,7 @@ __all__ = [
     "list_candidates",
     "save_candidate",
     "save_candidate_from_profile",
+    "score_profile",
 ]
 
 
@@ -138,6 +139,16 @@ def analyze_profile(resume_text: str) -> dict:
     return json.loads(profile_json)
 
 
+def score_profile(profile: dict) -> dict:
+    """只做人岗匹配打分，不写库（供前端先看分数，再决定是否入库）。
+
+    吃的是画像 dict，返回 MatchResult（matched_job / match_score / report）；
+    全程只调模型、不碰数据库，所以反复看分、改画像都不会产生脏数据。
+    """
+    profile_json = json.dumps(profile, ensure_ascii=False)
+    return json.loads(match_resume_worker.invoke({"profile_json": profile_json}))
+
+
 def save_candidate_from_profile(profile: dict, resume_text: str) -> dict:
     """第二步：把（可能被用户改过的）画像入库。
 
@@ -151,11 +162,7 @@ def save_candidate_from_profile(profile: dict, resume_text: str) -> dict:
         name = "未知姓名"
     profile["name"] = name
 
-    match_result = json.loads(
-        match_resume_worker.invoke(
-            {"profile_json": json.dumps(profile, ensure_ascii=False)}
-        )
-    )
+    match_result = score_profile(profile)
 
     candidate_id, is_update = _write_candidate(
         _build_row(profile, resume_text, match_result)
