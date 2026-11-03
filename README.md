@@ -339,7 +339,7 @@ pytest          # 现有用例只依赖标准库，不需要 API_KEY / 向量库
 - [x] **统一主管（Supervisor）路由三种编排**：顶层大模型主管按人话语义三选一，派发到串行 / 静态并行 / Send 三个**已编译 subgraph**（`resume_unified_supervisor.py`）；`Literal` 锁死合法路由、条件边派单，模型只选路不造路，三个真实场景实测全部正确。
 - [x] **五层容错与健壮性**：LLM 超时重试、工具结构化 error、串联短路 + 退避重试、编排层停手、rerank 降级，避免脏数据与级联失败（`recruit_mcp/recruit_server.py`、`recruit_graph/candidate_store.py`、`hybrid_retriever.py`）。
 - [x] **精排/粗排开关**：`hybrid_search(..., use_rerank=)` 一路透传到 LangGraph 工具 / MCP / REST，在最准（精排）与最快（粗排）间切换。
-- [x] **可观测（Observability）**：基于 LangChain `AsyncCallbackHandler` 记录每轮 LLM/工具调用、token、耗时与成败，控制台实时日志 + JSONL 落盘；网页完整版已接入 Langfuse 回调（`recruit_mcp/observability.py`、`recruit_graph/web_stream_agent.py`）。
+- [x] **可观测（Observability）**：基于 LangChain `AsyncCallbackHandler` 记录每轮 LLM/工具调用、token、耗时与成败，控制台实时日志 + JSONL 落盘；网页完整版已接入 Langfuse 回调（`recruit_graph/web_stream_agent.py`，依赖已在 pyproject 声明）；`recruit_mcp/observability.py` 是同机制的自定义回调，不依赖 langfuse。
 - [x] **统一工作台 + 文档解析 + JD 生成**：Gradio 五 Tab 工作台（岗位管理、简历初筛、知识库问答、深度研究、对标分析）；PDF/Word/图片 OCR 解析（`doc_parser.py`）；JD 生成器 few-shot RAG 检索同类范例 + 客户要求优先 + Function Calling 结构化输出；岗位按 id 更新与简历姓名防脏（`web_workbench.py`、`jd_generator.py`、`jd_store.py`）。
 - [ ] **部署上线**：真实数据、服务器部署、公网可访问。
 - [x] **Deep Agents 深度研究（多智能体规划/并行/共享文件）**：研究主管 write_todos 规划 + 两个 SubAgent 并行检索本地 JD、写共享虚拟文件，主管读回综合成每条带来源块 id 的报告；已接进统一工作台第 4 个标签「深度研究」，同时返回可读过程轨迹（`recruit_graph/deep_research.py`）。
