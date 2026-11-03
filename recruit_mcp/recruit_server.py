@@ -8,7 +8,7 @@
 - 岗位库管理（写 SQLite + 向量库，带跨存储一致性与长度上限防护）：
   save_position / delete_position
 - 简历分析（只读，不写库）：
-  analyze_resume / match_resume_with_jd
+  analyze_resume / score_candidate / match_resume_with_jd
 - 业务闭环（写 SQLite）：
   screen_candidate / rank_candidates / delete_candidate
 
@@ -41,6 +41,7 @@ from recruit_graph.candidate_store import (  # noqa: E402
     delete_candidate as delete_candidate_row,
     list_candidates,
     save_candidate,
+    score_profile,
 )
 from recruit_graph.graph_tools import (  # noqa: E402
     analyze_resume_worker,
@@ -150,6 +151,24 @@ def analyze_resume(resume_text: str) -> dict:
         return analyze_profile(resume_text)
     except Exception as e:
         return {"error": "简历分析失败", "detail": str(e)}
+
+
+@server.tool()
+def score_candidate(resume_text: str) -> dict:
+    """只对一份简历抽画像并打分（不写数据库），返回画像和匹配结果。
+    当用户想“先看分数、再决定要不要入库”时使用；打分自动按岗位库大小选择
+    全量比对或混合检索，全程只读，不会产生候选人记录。
+    :param resume_text: 简历原文
+    """
+    try:
+        profile = analyze_profile(resume_text)
+    except Exception as e:
+        return {"error": "简历分析失败，无法继续打分", "detail": str(e)}
+    try:
+        match = score_profile(profile)
+        return {"profile": profile, "match": match}
+    except Exception as e:
+        return {"error": "人岗匹配打分失败", "detail": str(e)}
 
 
 @server.tool()
