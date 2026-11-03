@@ -16,8 +16,18 @@ API_KEY = os.getenv("API_KEY")
 BASE_URL = os.getenv("BASE_URL", "https://api.deepseek.com")
 MODEL = os.getenv("MODEL", "deepseek-chat")
 # 检索相关性阈值：rerank 分数低于它的块直接挡掉（第一层过滤）。
-# 依据 8 个简历的分数分布：完全不相关的最高 0.055，正样本期望岗位最低 0.138。
-SCORE_THRESHOLD = 0.1
+# 12 岗位下重新标定：正样本期望岗最高分块最低 0.0817，阈值取 0.05 留安全余量，
+# 只挡纯噪声；“表面相似但方向不符”由第二层 LLM 裁判负责。
+SCORE_THRESHOLD = 0.05
+
+# 粗排候选块数与精排保留块数：同类 Agent 岗增多，多捞、多留，避免正确岗位被挤掉。
+RETRIEVAL_CANDIDATE_N = 12
+RETRIEVAL_TOP_K = 5
+
+# 全量比对的总字数上限：岗位库总字数不超过它，就直接读完整 JD 全量比对（信息完整、
+# 岗位名更准）；超过则自动切换到混合检索，避免 JD 总量撑爆上下文窗口。
+# 15000 字 JD 再加上提示词、画像、输出，仍远小于模型窗口，留足安全余量。
+FULL_SCAN_MAX_CHARS = 15000
 
 
 @tool
@@ -203,7 +213,12 @@ def match_jd_worker(state: Annotated[list, InjectedState("messages")]) -> str:
     profile_json = tool_messages[-1].content if tool_messages else ""
 
     # 第一层：用画像检索 JD，加 rerank 相关性阈值，挡掉完全不相关的块
-    jd_docs = hybrid_search(profile_json, score_threshold=SCORE_THRESHOLD)
+    jd_docs = hybrid_search(
+        profile_json,
+        candidate_n=RETRIEVAL_CANDIDATE_N,
+        top_k=RETRIEVAL_TOP_K,
+        score_threshold=SCORE_THRESHOLD,
+    )
     candidate_jd_ids = []
     for doc in jd_docs:
         jid = doc.metadata["jd_id"]
@@ -261,6 +276,82 @@ def match_resume_worker(profile_json: str) -> str:
     return result.model_dump_json(ensure_ascii=False)
 
 
+def _sum_jd_chars() -> int:
+    """统计岗位库当前 JD 总字数（自动路由的判断依据，只读元数据、不读全文）。"""
+    from recruit_graph.jd_store import list_jds
+
+    return sum(int(item["jd_len"]) for item in list_jds())
+
+
+def _full_jd_text() -> str:
+    """全量路径：按 id 升序读取全部完整 JD，用分隔符拼成一段。"""
+    from recruit_graph.jd_store import get_jd, list_jds
+
+    rows = sorted(list_jds(), key=lambda item: item["id"])
+    return "\n---\n".join(get_jd(item["id"])["jd_text"] for item in rows)
+
+
+def _retrieval_jd_text(profile_json: str) -> str:
+    """检索路径：混合检索 + LLM 裁判，返回相关岗位完整 JD 文本；无匹配返回空字符串。"""
+    from recruit_graph.jd_store import get_jd
+    from recruit_graph.relevance_filter import filter_relevant_jd_ids
+
+    docs = hybrid_search(
+        profile_json,
+        candidate_n=RETRIEVAL_CANDIDATE_N,
+        top_k=RETRIEVAL_TOP_K,
+        score_threshold=SCORE_THRESHOLD,
+    )
+    candidate_ids = []
+    for doc in docs:
+        jid = doc.metadata["jd_id"]
+        if jid not in candidate_ids:
+            candidate_ids.append(jid)
+
+    relevant_ids = filter_relevant_jd_ids(profile_json, candidate_ids)
+    return "\n---\n".join(get_jd(jid)["jd_text"] for jid in relevant_ids)
+
+
+def _score_to_result(profile_json: str, jd_text: str) -> MatchResult:
+    """两条路径共用：对照画像与候选 JD，用同一套提示词结构化输出 MatchResult。"""
+    match_model = chat_model.with_structured_output(
+        MatchResult,
+        method="function_calling",
+    )
+    return match_model.invoke(
+        [
+            match_system,
+            HumanMessage(
+                content=f"【候选人画像】\n{profile_json}\n\n【候选岗位 JD】\n{jd_text}"
+            ),
+        ]
+    )
+
+
+@tool
+def smart_match_resume(profile_json: str) -> str:
+    """人岗匹配自动路由：输入候选人画像 JSON，自动按岗位库总字数选择策略——
+    数据量小走完整 JD 全量比对（信息完整、岗位名准），数据量大走混合检索+裁判
+    （避免撑爆上下文窗口）；两条路都返回统一的 MatchResult JSON（岗位、0-100 分数、理由）。
+    当需要给候选人打分、又不希望人工判断该用哪种匹配方式时使用。
+    """
+    if _sum_jd_chars() <= FULL_SCAN_MAX_CHARS:
+        jd_text = _full_jd_text()
+    else:
+        jd_text = _retrieval_jd_text(profile_json)
+
+    if not jd_text:
+        no_match = MatchResult(
+            matched_job="无",
+            match_score=0,
+            report="经检索与相关性判断，该候选人与岗位库中的所有岗位均不匹配（无匹配）。",
+        )
+        return no_match.model_dump_json(ensure_ascii=False)
+
+    result = _score_to_result(profile_json, jd_text)
+    return result.model_dump_json(ensure_ascii=False)
+
+
 match_by_jd_system = SystemMessage(
     content=(
         "你是人岗匹配专家。你会收到候选人画像 JSON 和一份用户指定的目标岗位 JD。"
@@ -303,7 +394,12 @@ def analyze_and_match_resume(resume_text: str) -> str:
     profile_json = analyze_resume_worker.invoke({"resume_text": resume_text})
 
     # 第二步（第一层）：拿画像检索 JD，加 rerank 相关性阈值
-    jd_docs = hybrid_search(profile_json, score_threshold=SCORE_THRESHOLD)
+    jd_docs = hybrid_search(
+        profile_json,
+        candidate_n=RETRIEVAL_CANDIDATE_N,
+        top_k=RETRIEVAL_TOP_K,
+        score_threshold=SCORE_THRESHOLD,
+    )
     candidate_jd_ids = []
     for doc in jd_docs:
         jid = doc.metadata["jd_id"]

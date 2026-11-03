@@ -5,7 +5,7 @@ import json
 import time
 
 from recruit_graph.db import DB_PATH, connect, upsert_candidate
-from recruit_graph.graph_tools import analyze_resume_worker, match_resume_worker
+from recruit_graph.graph_tools import analyze_resume_worker, smart_match_resume
 
 __all__ = [
     "DB_PATH",
@@ -92,7 +92,7 @@ def save_candidate(resume_text: str) -> dict:
         match_result = json.loads(
             _run_step(
                 "人岗匹配",
-                match_resume_worker.invoke,
+                smart_match_resume.invoke,
                 {"profile_json": profile_json},
             )
         )
@@ -146,7 +146,7 @@ def score_profile(profile: dict) -> dict:
     全程只调模型、不碰数据库，所以反复看分、改画像都不会产生脏数据。
     """
     profile_json = json.dumps(profile, ensure_ascii=False)
-    return json.loads(match_resume_worker.invoke({"profile_json": profile_json}))
+    return json.loads(smart_match_resume.invoke({"profile_json": profile_json}))
 
 
 def save_candidate_from_profile(profile: dict, resume_text: str) -> dict:

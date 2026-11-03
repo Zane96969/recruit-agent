@@ -7,12 +7,12 @@
 import json
 from pathlib import Path
 
+from recruit_graph.graph_tools import RETRIEVAL_CANDIDATE_N, RETRIEVAL_TOP_K
 from recruit_graph.hybrid_retriever import hybrid_search
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 RESUME_DIR = REPO_ROOT / "data" / "resumes"
 DATASET_FILE = REPO_ROOT / "eval" / "eval_dataset.json"
-TOP_K = 3
 
 # 第一组：读评测数据集（8 个用例）
 dataset = json.loads(DATASET_FILE.read_text(encoding="utf-8"))
@@ -21,7 +21,11 @@ dataset = json.loads(DATASET_FILE.read_text(encoding="utf-8"))
 results = []
 for case in dataset:
     resume_text = (RESUME_DIR / case["resume_file"]).read_text(encoding="utf-8")
-    docs = hybrid_search(resume_text, top_k=TOP_K)
+    docs = hybrid_search(
+        resume_text,
+        candidate_n=RETRIEVAL_CANDIDATE_N,
+        top_k=RETRIEVAL_TOP_K,
+    )
     retrieved = [doc.metadata["jd_id"] for doc in docs]
 
     expected = case["expected_jd_id"]

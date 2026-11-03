@@ -21,7 +21,12 @@ from ragas.metrics import (
     LLMContextRecall,
 )
 
-from recruit_graph.graph_tools import SCORE_THRESHOLD, chat_model
+from recruit_graph.graph_tools import (
+    RETRIEVAL_CANDIDATE_N,
+    RETRIEVAL_TOP_K,
+    SCORE_THRESHOLD,
+    chat_model,
+)
 from recruit_graph.hybrid_retriever import hybrid_search
 from recruit_graph.jd_store import get_jd
 from recruit_graph.relevance_filter import filter_relevant_jd_ids
@@ -29,7 +34,6 @@ from recruit_graph.relevance_filter import filter_relevant_jd_ids
 REPO_ROOT = Path(__file__).resolve().parent.parent
 RESUME_DIR = REPO_ROOT / "data" / "resumes"
 DATASET_FILE = REPO_ROOT / "eval" / "eval_dataset.json"
-TOP_K = 3
 
 # 第一组：生成匹配结论的系统提示
 gen_system = SystemMessage(
@@ -64,7 +68,12 @@ for case in dataset:
     resume_text = (RESUME_DIR / case["resume_file"]).read_text(encoding="utf-8")
 
     # 第一层：rerank 相关性阈值，挡掉完全不相关的块
-    docs = hybrid_search(resume_text, top_k=TOP_K, score_threshold=SCORE_THRESHOLD)
+    docs = hybrid_search(
+        resume_text,
+        candidate_n=RETRIEVAL_CANDIDATE_N,
+        top_k=RETRIEVAL_TOP_K,
+        score_threshold=SCORE_THRESHOLD,
+    )
     candidate_jd_ids = []
     for doc in docs:
         jid = doc.metadata["jd_id"]

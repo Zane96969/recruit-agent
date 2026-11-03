@@ -1,0 +1,26 @@
+{
+  "run_date": "2026-11-03",
+  "changes": {
+    "candidate_n": {"old": 8, "new": 12},
+    "top_k": {"old": 3, "new": 5},
+    "score_threshold": {"old": 0.1, "new": 0.05}
+  },
+  "retrieval": {
+    "hit_rate": 1.0,
+    "mrr": 0.889
+  },
+  "end_to_end_judge": {
+    "accuracy": 0.875,
+    "note": "judge脚本取第一个相关，低估生产链路"
+  },
+  "ragas_positive": {
+    "context_recall": 1.0,
+    "context_precision": 0.8056,
+    "faithfulness": 0.7553
+  },
+  "negative_rejection_rate": 1.0,
+  "production_entry_check": {
+    "case_1": {"matched_jd": 1, "score": 90},
+    "case_2": {"matched_jd": 1, "score": 75}
+  }
+}

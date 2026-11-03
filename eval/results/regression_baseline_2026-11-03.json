@@ -1,0 +1,45 @@
+{
+  "run_date": "2026-11-03",
+  "baseline_commit": "0934d13",
+  "scale": {
+    "jd_count": 12,
+    "vector_chunks": 82,
+    "eval_cases": 8,
+    "positive_cases": 6,
+    "negative_cases": 2
+  },
+  "retrieval": {
+    "hit_rate": 0.6667,
+    "mrr": 0.667,
+    "old_hit_rate": 1.0,
+    "old_mrr": 1.0
+  },
+  "end_to_end": {
+    "accuracy": 0.75,
+    "old_accuracy": 1.0
+  },
+  "ragas_positive": {
+    "context_recall": 0.8333,
+    "context_precision": 0.75,
+    "faithfulness": 0.6556,
+    "old_context_recall": 1.0,
+    "old_context_precision": 0.83,
+    "old_faithfulness": 0.8
+  },
+  "negative_rejection_rate": 1.0,
+  "failed_cases": [
+    {
+      "case_id": 1,
+      "expected_jd_id": 1,
+      "actual": null,
+      "mechanism": "阈值0.1清空候选，漏判"
+    },
+    {
+      "case_id": 2,
+      "expected_jd_id": 1,
+      "actual": 9,
+      "mechanism": "裁判误判金融Agent岗相关，错配"
+    }
+  ],
+  "root_cause": "rerank精排阶段把粗排已命中的1号岗踢出前列；通用reranker无法区分技术栈相同、行业/级别不同的岗位；阈值0.1在新分数分布下误杀"
+}

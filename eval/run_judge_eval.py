@@ -11,14 +11,18 @@ from pathlib import Path
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
 
-from recruit_graph.graph_tools import SCORE_THRESHOLD, chat_model
+from recruit_graph.graph_tools import (
+    RETRIEVAL_CANDIDATE_N,
+    RETRIEVAL_TOP_K,
+    SCORE_THRESHOLD,
+    chat_model,
+)
 from recruit_graph.hybrid_retriever import hybrid_search
 from recruit_graph.jd_store import get_jd
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 RESUME_DIR = REPO_ROOT / "data" / "resumes"
 DATASET_FILE = REPO_ROOT / "eval" / "eval_dataset.json"
-TOP_K = 3
 
 
 # 第一组：裁判的结构化输出（判断结果 + 理由）
@@ -62,7 +66,12 @@ results = []
 for case in dataset:
     resume_text = (RESUME_DIR / case["resume_file"]).read_text(encoding="utf-8")
     # 第一层：rerank 相关性阈值（第二层就是下面的 judge_relevance 裁判）
-    docs = hybrid_search(resume_text, top_k=TOP_K, score_threshold=SCORE_THRESHOLD)
+    docs = hybrid_search(
+        resume_text,
+        candidate_n=RETRIEVAL_CANDIDATE_N,
+        top_k=RETRIEVAL_TOP_K,
+        score_threshold=SCORE_THRESHOLD,
+    )
 
     # 检索结果按 jd_id 去重，再读完整 JD
     unique_jd_ids = []
